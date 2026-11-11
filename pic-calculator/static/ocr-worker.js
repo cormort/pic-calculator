@@ -24,7 +24,7 @@ const FULL_QUAD = [[0, 0], [1, 0], [1, 1], [0, 1]];
 const LAYOUT_MODEL = 'https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolve/7e851b9e5ad66613d7318a3213ab3336ebe0a514/pp_doclayout_s.onnx';
 const TABLE_CLASS = 8, FALLBACK_CLASSES = [1, 18], TABLE_MIN_SCORE = 0.5;
 
-let service = null, serviceQuality = null, toTraditional = null;
+let service = null, serviceQuality = null, serviceBackend = null, toTraditional = null;
 let layoutSession = null, layoutEps = null;
 
 const postStatus = (text) => self.postMessage({ type: 'status', text });
@@ -58,6 +58,7 @@ async function ensureService(quality) {
     try { await service.destroy?.(); } catch (err) { /* 忽略 */ }
     service = null;
     serviceQuality = null;
+    serviceBackend = null;
   }
   const info = QUALITY[q];
   postStatus(`載入${info.label}模型（首次約 ${info.size}）…`);
@@ -65,6 +66,8 @@ async function ensureService(quality) {
     ? new PaddleOcrService({ model: info.model })
     : new PaddleOcrService();
   await Promise.all([svc.initialize(), ensureConverter()]);
+  const providers = svc.options?.session?.executionProviders || [];
+  serviceBackend = providers.includes('webgpu') ? 'webgpu' : 'wasm';
   service = svc;
   serviceQuality = q;
   return service;
@@ -73,6 +76,11 @@ async function ensureService(quality) {
 /* =============================================================
    表格偵測（PP-DocLayout-S）
    ============================================================= */
+function layoutBackend() {
+  if (!layoutEps) return null;
+  return layoutEps.includes('webgpu') ? 'webgpu' : 'wasm';
+}
+
 async function createLayoutSession(eps) {
   return ort.InferenceSession.create(LAYOUT_MODEL, {
     executionProviders: eps,
@@ -227,7 +235,7 @@ self.onmessage = async (event) => {
       const bitmap = await decodeImage(msg.buffer);
       let quad = null;
       try { quad = await detectTable(bitmap); } finally { bitmap.close(); }
-      self.postMessage({ type: 'detect-result', id, quad });
+      self.postMessage({ type: 'detect-result', id, quad, backend: { layout: layoutBackend() } });
       return;
     }
     if (msg.type !== 'ocr') return;
@@ -257,7 +265,7 @@ self.onmessage = async (event) => {
           score: r.confidence,
         };
       });
-    self.postMessage({ type: 'result', id, confidence, results });
+    self.postMessage({ type: 'result', id, confidence, results, backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });
   }

@@ -60,6 +60,7 @@
   .quality-row label { font-size: .85rem; font-weight: 600; color: var(--muted); }
   .quality-row select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); font-size: .9rem; }
   .quality-row .note { font-size: .78rem; color: var(--muted); }
+  .quality-row .note.webgpu-on { color: #1a6640; font-weight: 700; }
   .btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 10px 20px; border-radius: 8px; font-size: .92rem; font-weight: 600;
@@ -281,6 +282,9 @@
         <option value="medium">高精度（約 139MB，較慢）</option>
       </select>
       <span id="quality-note" class="note">標準：密集表格／一般拍照</span>
+    </div>
+    <div class="quality-row" style="margin-top:2px;">
+      <span id="backend-note" class="note" title="以實際建立的 ONNX session 為準；WebGPU 失敗會自動回退 WASM">後端：OCR —／版面 —</span>
     </div>
     <div class="btn-row" style="margin-top:12px;">
       <button class="btn" id="analyze-btn" onclick="analyzeImage()">🔍 辨識表格</button>
@@ -699,6 +703,7 @@ const OCR_QUALITY_INFO = {
   medium: { label: '高精度', size: '139MB' },
 };
 let ocrQuality = 'small';
+const backendInfo = { ocr: null, layout: null };
 try {
   const saved = localStorage.getItem('pcOcrQuality');
   if (saved && OCR_QUALITY_INFO[saved]) ocrQuality = saved;
@@ -709,6 +714,21 @@ const LOW_CONFIDENCE = 0.85;
 
 let ocrWorker = null, ocrJobSeq = 0;
 const ocrPending = new Map();
+
+function renderBackendNote() {
+  const el = document.getElementById('backend-note');
+  if (!el) return;
+  const name = (v) => v === 'webgpu' ? 'WebGPU' : v === 'wasm' ? 'WASM' : '—';
+  el.textContent = `後端：OCR ${name(backendInfo.ocr)}／版面 ${name(backendInfo.layout)}`;
+  el.classList.toggle('webgpu-on', backendInfo.ocr === 'webgpu' || backendInfo.layout === 'webgpu');
+}
+
+function applyBackend(backend) {
+  if (!backend) return;
+  if (backend.ocr) backendInfo.ocr = backend.ocr;
+  if (backend.layout) backendInfo.layout = backend.layout;
+  renderBackendNote();
+}
 
 function getOcrWorker() {
   if (ocrWorker) return ocrWorker;
@@ -729,6 +749,7 @@ function getOcrWorker() {
       }
       return;
     }
+    if (msg.backend) applyBackend(msg.backend);
     const job = ocrPending.get(msg.id);
     if (!job) return;
     ocrPending.delete(msg.id);
@@ -1278,6 +1299,7 @@ if (qualitySelect) {
   qualitySelect.value = ocrQuality;
   setOcrQuality(ocrQuality);
 }
+renderBackendNote();
 
 // Register service worker for PWA
 if ('serviceWorker' in navigator) {
