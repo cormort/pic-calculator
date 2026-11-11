@@ -75,11 +75,16 @@
 
   #preview-wrap { margin-top: 20px; display: none; }
   #preview-wrap img { max-width: 100%; max-height: 60vh; border-radius: 10px; border: 1px solid var(--border); display: block; }
-  /* 框選表格範圍：touch-action:none 讓手指拖曳是畫框而不是捲動頁面 */
-  #crop-wrap { position: relative; width: fit-content; margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; overflow: hidden; border-radius: 10px; }
+  /* 四角點框選表格（可拉成梯形做透視矯正） */
+  #crop-wrap { position: relative; width: fit-content; margin: 0 auto; user-select: none; -webkit-user-select: none; }
   #crop-wrap img { -webkit-user-drag: none; -webkit-touch-callout: none; }
-  #crop-box { position: absolute; display: none; border: 2px solid var(--primary); background: rgba(67,97,238,.12); box-shadow: 0 0 0 9999px rgba(0,0,0,.35); pointer-events: none; }
-  #crop-hint { text-align: center; color: var(--muted); font-size: .82rem; margin-top: 8px; }
+  #crop-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; border-radius: 10px; }
+  #crop-shade { fill: rgba(0,0,0,.35); fill-rule: evenodd; }
+  #crop-poly { fill: rgba(67,97,238,.10); stroke: var(--primary); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  /* 44px 的透明觸控範圍，中間才是看得到的圓點 */
+  .crop-handle { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px; touch-action: none; cursor: grab; }
+  .crop-handle::after { content: ""; position: absolute; inset: 13px; border-radius: 50%; background: #fff; border: 3px solid var(--primary); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  #crop-hint { text-align: center; color: var(--muted); font-size: .82rem; margin-top: 14px; }
 
   #camera-section { display: none; margin-top: 16px; }
   #video { width: 100%; max-height: 280px; border-radius: 10px; border: 1px solid var(--border); background: #000; }
@@ -240,9 +245,11 @@
     <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP</p>
   </div>
 
+  <!-- 手機/平板：直接開原生相機拍照（全解析度、可自動對焦），比網頁內的即時影像清楚得多 -->
+  <input type="file" id="capture-input" accept="image/*" capture="environment" hidden>
   <div class="btn-row">
     <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇圖片</button>
-    <button class="btn btn-outline" id="camera-btn" onclick="toggleCamera()">📷 開啟相機</button>
+    <button class="btn btn-outline" id="camera-btn" onclick="toggleCamera()">📷 拍照</button>
   </div>
 
   <div id="camera-section">
@@ -257,9 +264,13 @@
   <div id="preview-wrap">
     <div id="crop-wrap">
       <img id="preview-img" src="" alt="預覽" draggable="false">
-      <div id="crop-box"></div>
+      <svg id="crop-svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="crop-shade"/><polygon id="crop-poly"/></svg>
+      <div class="crop-handle"></div><div class="crop-handle"></div><div class="crop-handle"></div><div class="crop-handle"></div>
     </div>
     <p id="crop-hint"></p>
+    <div class="btn-row" style="margin-top:6px;">
+      <button class="btn btn-ghost btn-sm" onclick="setQuad(FULL_QUAD)">↺ 框選整張圖</button>
+    </div>
     <div class="btn-row" style="margin-top:12px;">
       <button class="btn" id="analyze-btn" onclick="analyzeImage()">🔍 辨識表格</button>
     </div>
@@ -546,49 +557,114 @@ dropZone.addEventListener('drop', e => {
   const f = e.dataTransfer.files[0];
   if (f && f.type.startsWith('image/')) loadFile(f);
 });
-document.getElementById('file-input').addEventListener('change', e => {
+['file-input', 'capture-input'].forEach(id => document.getElementById(id).addEventListener('change', e => {
   if (e.target.files[0]) loadFile(e.target.files[0]);
-});
+  e.target.value = '';   // 同一張圖可以重選
+}));
 
 /* =============================================================
    表格範圍：自動偵測 + 手動框選
    ============================================================= */
-let crop = null;   // {x1,y1,x2,y2}，佔原圖的比例 (0~1)；null = 整張圖
+// 表格四個角點 [左上, 右上, 右下, 左下]，座標為佔原圖的比例 (0~1)
+// 做法參考 cormort/image_correct：四角點 + 透視變換，把斜拍的表格拉正再辨識
+const FULL_QUAD = [[0, 0], [1, 0], [1, 1], [0, 1]];
+let quad = FULL_QUAD, quadTouched = false;
 const cropWrap = document.getElementById('crop-wrap');
+const handles = [...document.querySelectorAll('.crop-handle')];
 
-function showCrop(auto) {
-  const box = document.getElementById('crop-box');
-  box.style.display = crop ? 'block' : 'none';
-  if (crop) Object.assign(box.style, {
-    left: crop.x1 * 100 + '%', top: crop.y1 * 100 + '%',
-    width: (crop.x2 - crop.x1) * 100 + '%', height: (crop.y2 - crop.y1) * 100 + '%',
-  });
-  document.getElementById('crop-hint').textContent = crop
-    ? (auto ? '已自動框出表格。' : '') + '只辨識框內範圍；拖曳可重新框選，點一下圖片取消。'
-    : '辨識整張圖片；可在圖上拖曳框選表格範圍。';
+function setQuad(q, hint) {
+  quad = q.map(p => p.slice());
+  const pts = quad.map(([x, y]) => `${x * 100},${y * 100}`);
+  document.getElementById('crop-poly').setAttribute('points', pts.join(' '));
+  document.getElementById('crop-shade').setAttribute('d', `M0 0H100V100H0Z M${pts.join(' L')}Z`);
+  handles.forEach((h, i) => { h.style.left = quad[i][0] * 100 + '%'; h.style.top = quad[i][1] * 100 + '%'; });
+  document.getElementById('crop-hint').textContent = (hint || '') + '拖曳四個角點對準表格的四個角，斜拍的照片會自動拉正。';
 }
 
-cropWrap.addEventListener('pointerdown', e => {
-  cropWrap.setPointerCapture(e.pointerId);
-  const r = cropWrap.getBoundingClientRect();
-  const at = ev => [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height]
-    .map(v => Math.min(1, Math.max(0, v)));
-  const [sx, sy] = at(e);
-  crop = null;   // 單純點一下 = 取消框選
+handles.forEach((h, i) => h.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  h.setPointerCapture(e.pointerId);
   const move = ev => {
-    const [x, y] = at(ev);
-    crop = { x1: Math.min(sx, x), y1: Math.min(sy, y), x2: Math.max(sx, x), y2: Math.max(sy, y) };
-    showCrop();
+    const r = cropWrap.getBoundingClientRect();
+    const q = quad.map(p => p.slice());
+    q[i] = [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height].map(v => Math.min(1, Math.max(0, v)));
+    quadTouched = true;
+    setQuad(q);
   };
-  const up = () => {
-    ['pointermove', 'pointerup', 'pointercancel'].forEach((t, i) => cropWrap.removeEventListener(t, i ? up : move));
-    if (crop && (crop.x2 - crop.x1 < .03 || crop.y2 - crop.y1 < .03)) crop = null;   // 太小視為誤觸
-    showCrop();
-  };
-  cropWrap.addEventListener('pointermove', move);
-  cropWrap.addEventListener('pointerup', up);
-  cropWrap.addEventListener('pointercancel', up);
-});
+  const up = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); };
+  h.addEventListener('pointermove', move);
+  h.addEventListener('pointerup', up);
+  h.addEventListener('pointercancel', up);
+}));
+
+// 把四點排成 [左上, 右上, 右下, 左下]（使用者可能把角點拖到交叉）
+function orderPoints(pts) {
+  const byX = [...pts].sort((a, b) => a[0] - b[0]);
+  const [tl, bl] = byX.slice(0, 2).sort((a, b) => a[1] - b[1]);
+  const [tr, br] = byX.slice(2).sort((a, b) => a[1] - b[1]);
+  return [tl, tr, br, bl];
+}
+
+// 解 3×3 透視矩陣：把輸出矩形 (0,0)-(w,h) 的四角對應到原圖四點（8 元一次方程，高斯消去）
+function homography(w, h, src) {
+  const dst = [[0, 0], [w, 0], [w, h], [0, h]], A = [];
+  dst.forEach(([u, v], k) => {
+    const [x, y] = src[k];
+    A.push([u, v, 1, 0, 0, 0, -u * x, -v * x, x], [0, 0, 0, u, v, 1, -u * y, -v * y, y]);
+  });
+  for (let c = 0; c < 8; c++) {
+    let piv = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+    [A[c], A[piv]] = [A[piv], A[c]];
+    for (let r = 0; r < 8; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  return A.map((row, i) => row[8] / row[i]);
+}
+
+// 依四角點做透視矯正並轉灰階，輸出給 OCR 用的 canvas
+// 長邊統一到約 2560：大相片縮小省記憶體；小截圖放大（最多 3 倍），否則單獨的「0」等小字會漏偵測
+// 轉灰階：彩色字（如紅字、黃底）在彩色圖上會整格漏掉
+function rectifiedCanvas(img) {
+  const s0 = Math.min(1, 4096 / Math.max(img.naturalWidth, img.naturalHeight));   // 原圖上限，避免超出手機 canvas 限制
+  const W = Math.round(img.naturalWidth * s0), H = Math.round(img.naturalHeight * s0);
+  const srcC = document.createElement('canvas');
+  srcC.width = W; srcC.height = H;
+  const sg = srcC.getContext('2d', { willReadFrequently: true });
+  sg.drawImage(img, 0, 0, W, H);
+  const rgba = sg.getImageData(0, 0, W, H).data;
+  const gray = new Uint8Array(W * H);
+  for (let i = 0; i < gray.length; i++) gray[i] = rgba[i * 4] * 0.299 + rgba[i * 4 + 1] * 0.587 + rgba[i * 4 + 2] * 0.114;
+
+  const pts = orderPoints(quad.map(([x, y]) => [x * (W - 1), y * (H - 1)]));
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const w0 = Math.max(dist(pts[0], pts[1]), dist(pts[3], pts[2]), 1);
+  const h0 = Math.max(dist(pts[0], pts[3]), dist(pts[1], pts[2]), 1);
+  const scale = Math.min(3, 2560 / Math.max(w0, h0));
+  const dw = Math.round(w0 * scale), dh = Math.round(h0 * scale);
+  const m = homography(dw - 1, dh - 1, pts);
+
+  const out = document.createElement('canvas');
+  out.width = dw; out.height = dh;
+  const og = out.getContext('2d');
+  const id = og.createImageData(dw, dh), d = id.data;
+  for (let v = 0, o = 0; v < dh; v++) {
+    for (let u = 0; u < dw; u++, o += 4) {
+      const z = m[6] * u + m[7] * v + 1;
+      const x = Math.min(W - 1.001, Math.max(0, (m[0] * u + m[1] * v + m[2]) / z));
+      const y = Math.min(H - 1.001, Math.max(0, (m[3] * u + m[4] * v + m[5]) / z));
+      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, p = y0 * W + x0;   // 雙線性取樣
+      const top = gray[p] + (gray[p + 1] - gray[p]) * fx, bot = gray[p + W] + (gray[p + W + 1] - gray[p + W]) * fx;
+      d[o] = d[o + 1] = d[o + 2] = top + (bot - top) * fy;
+      d[o + 3] = 255;
+    }
+  }
+  og.putImageData(id, 0, 0);
+  return out;
+}
 
 // PP-DocLayout-S 版面偵測 (4.9MB)，取分數最高的「表格」區塊當預設框
 // 格線簡單的表格常被判成 image / chart（框的位置仍正確），所以沒有表格時退而取這兩類
@@ -624,18 +700,19 @@ async function detectTable(img) {
   }
   if (!best) return null;
   const pad = 0.01, f = v => Math.min(1, Math.max(0, v));   // 留一點邊，避免切到邊緣文字
-  return { x1: f(best.x1 / W - pad), y1: f(best.y1 / H - pad), x2: f(best.x2 / W + pad), y2: f(best.y2 / H + pad) };
+  const x1 = f(best.x1 / W - pad), y1 = f(best.y1 / H - pad), x2 = f(best.x2 / W + pad), y2 = f(best.y2 / H + pad);
+  return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
 }
 
 function loadFile(file) {
   currentFile = file;
-  crop = null;
-  showCrop();
+  quadTouched = false;
+  setQuad(FULL_QUAD);
   const reader = new FileReader();
   reader.onload = ev => {
     const img = document.getElementById('preview-img');
     img.onload = () => detectTable(img)
-      .then(box => { if (box && !crop && currentFile === file) { crop = box; showCrop(true); } })
+      .then(box => { if (box && !quadTouched && currentFile === file) setQuad(box, '已自動框出表格。'); })
       .catch(err => console.warn('表格偵測失敗，改為辨識整張圖', err));   // 偵測只是輔助，失敗不擋辨識
     img.src = ev.target.result;
     document.getElementById('preview-wrap').style.display = 'block';
@@ -648,6 +725,7 @@ function loadFile(file) {
 async function toggleCamera() {
   const sec = document.getElementById('camera-section');
   if (sec.style.display === 'block') { stopCamera(); return; }
+  if (matchMedia('(pointer: coarse)').matches) { document.getElementById('capture-input').click(); return; }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     alert('此瀏覽器不支援相機存取。\n\n請確保：\n1. 使用 HTTPS 連線\n2. 或在網址列點擊鎖頭圖示允許相機權限\n3. 行動裝置需點擊右上角設定 → 允許相機');
     return;
@@ -667,7 +745,7 @@ async function toggleCamera() {
 function stopCamera() {
   if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
   document.getElementById('camera-section').style.display = 'none';
-  document.getElementById('camera-btn').textContent = '📷 開啟相機';
+  document.getElementById('camera-btn').textContent = '📷 拍照';
 }
 function capturePhoto() {
   const video = document.getElementById('video');
@@ -705,23 +783,10 @@ async function ocrWords(img) {
     ocrService = svc;
   }
   text.textContent = '辨識中，請稍候…';
-  // 長邊統一到約 2560：大相片縮小省記憶體；小截圖放大（最多 3 倍），否則單獨的「0」等小字會漏偵測
-  const c = crop || { x1: 0, y1: 0, x2: 1, y2: 1 };
-  const sx = c.x1 * img.naturalWidth, sy = c.y1 * img.naturalHeight;
-  const sw = (c.x2 - c.x1) * img.naturalWidth, sh = (c.y2 - c.y1) * img.naturalHeight;
-  const scale = Math.min(3, 2560 / Math.max(sw, sh));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(sw * scale);
-  canvas.height = Math.round(sh * scale);
-  const g = canvas.getContext('2d');
-  g.imageSmoothingQuality = 'high';
-  g.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  // 轉灰階：彩色字（如紅字、黃底）在彩色圖上會整格漏掉。手動算是因為 Safari 的 canvas filter 支援不穩
-  const id = g.getImageData(0, 0, canvas.width, canvas.height), d = id.data;
-  for (let i = 0; i < d.length; i += 4) d[i] = d[i + 1] = d[i + 2] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-  g.putImageData(id, 0, 0);
+  const canvas = rectifiedCanvas(img);
+  // per-box：逐框辨識。預設的逐行合併遇到歪斜 2° 以上的照片會整張讀成亂碼
   // 先拿全部結果算平均信心值（判斷圖片品質），再自行濾掉低信心的雜訊
-  const res = await ocrService.recognize(canvas, { flatten: true, minimumConfidence: 0 });
+  const res = await ocrService.recognize(canvas, { flatten: true, minimumConfidence: 0, strategy: 'per-box' });
   ocrConfidence = res.results.length ? res.results.reduce((a, r) => a + r.confidence, 0) / res.results.length : 1;
   return res.results.filter(r => r.confidence >= MIN_CONFIDENCE && r.text.trim()).map(r => {
     const { x, y, width: w, height: h } = r.box;
@@ -736,6 +801,25 @@ const cleanText = t => toTraditional(t.trim()).replace(/(?<=[\u3000-\u303f\u4e00
 function buildTable(words) {
   if (!words.length) return [];
   const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
+
+  // 校正歪斜：手機拍照很少完全水平。在 ±15° 內找出讓文字框「排成列」最整齊的角度
+  // （把 y 投影到直方圖，越集中分數越高），再把座標轉正後才分列
+  const binH = avg(words, w => w.h) / 2;
+  let skew = 0, bestScore = -1;
+  for (let deg = -15; deg <= 15; deg += 0.25) {
+    const t = deg * Math.PI / 180, sin = Math.sin(t), cos = Math.cos(t), bins = new Map();
+    for (const w of words) { const b = Math.round((w.cy * cos - w.cx * sin) / binH); bins.set(b, (bins.get(b) || 0) + 1); }
+    let score = 0;
+    for (const n of bins.values()) score += n * n;
+    if (score > bestScore || (score === bestScore && Math.abs(deg) < Math.abs(skew))) { bestScore = score; skew = deg; }
+  }
+  if (skew) {
+    const t = skew * Math.PI / 180, sin = Math.sin(t), cos = Math.cos(t);
+    words = words.map(w => {
+      const cx = w.cx * cos + w.cy * sin, cy = w.cy * cos - w.cx * sin, hw = (w.x2 - w.x1) / 2;
+      return { ...w, cx, cy, x1: cx - hw, x2: cx + hw };
+    });
+  }
 
   // 依 y 中心分列
   const yTol = Math.max(avg(words, w => w.h) * 0.55, 6);
