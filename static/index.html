@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>圖片計算器</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f5f6fa;
+    --card: #ffffff;
+    --primary: #4361ee;
+    --success: #27ae60;
+    --error: #e74c3c;
+    --warn: #f39c12;
+    --info: #2980b9;
+    --border: #e0e3ef;
+    --text: #2d3436;
+    --muted: #636e72;
+    --radius: 12px;
+    --plus: #2980b9;
+    --minus: #c0392b;
+    --target: #d35400;
+  }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; min-height: 100vh; }
+
+  header {
+    background: var(--primary); color: #fff; padding: 16px 24px;
+    display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 2px 8px rgba(67,97,238,.3);
+  }
+  header h1 { font-size: 1.25rem; font-weight: 600; }
+  header .icon { font-size: 1.5rem; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+
+  .upload-zone {
+    background: var(--card); border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 40px 24px; text-align: center; cursor: pointer;
+    transition: border-color .2s, background .2s; position: relative;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--primary); background: #f0f3ff; }
+  .upload-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .upload-zone .up-icon { font-size: 3rem; margin-bottom: 12px; }
+  .upload-zone p { color: var(--muted); font-size: .95rem; }
+  .upload-zone strong { color: var(--primary); }
+
+  .btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 10px 20px; border-radius: 8px; font-size: .92rem; font-weight: 600;
+    border: none; cursor: pointer; transition: opacity .15s, transform .1s, background .15s;
+    background: var(--primary); color: #fff;
+  }
+  .btn:hover { opacity: .9; }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-outline { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
+  .btn-ghost { background: transparent; color: var(--muted); padding: 6px 10px; }
+  .btn-ghost:hover { background: #eef0f5; opacity: 1; }
+  .btn-sm { padding: 6px 12px; font-size: .82rem; }
+
+  #preview-wrap { margin-top: 20px; display: none; }
+  #preview-wrap img { max-width: 100%; max-height: 280px; border-radius: 10px; border: 1px solid var(--border); display: block; margin: 0 auto; }
+  #pdf-note { text-align: center; color: var(--muted); font-size: .9rem; margin-top: 10px; }
+
+  .spinner-wrap { display: none; flex-direction: column; align-items: center; gap: 12px; padding: 32px; }
+  .spinner { width: 44px; height: 44px; border: 4px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #workspace { display: none; margin-top: 24px; }
+
+  .card { background: var(--card); border-radius: var(--radius); box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; overflow: hidden; }
+  .card-header {
+    padding: 12px 18px; font-weight: 700; font-size: 1rem;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  }
+  .card-body { padding: 14px 18px; }
+
+  .summary-banner { padding: 12px 16px; font-weight: 600; border-radius: var(--radius); margin-bottom: 12px; display: flex; align-items: center; gap: 10px; font-size: .95rem; }
+  .summary-banner.ok { background: #eafaf1; color: #1a6640; border: 1px solid #a9dfbf; }
+  .summary-banner.err { background: #fdedec; color: #922b21; border: 1px solid #f1948a; }
+  .summary-banner.warn { background: #fef9e7; color: #7d6608; border: 1px solid #f9e79f; }
+  .summary-banner.info { background: #e8f4fd; color: #1a5276; border: 1px solid #aed6f1; }
+
+  .hint { font-size: .82rem; color: var(--muted); padding: 8px 12px; background: #f8f9fc; border-left: 3px solid var(--info); border-radius: 4px; line-height: 1.6; }
+  #smart-note { margin-bottom: 12px; background: #f3f8ff; border-left-color: var(--primary); }
+
+  /* 模式切換 */
+  .mode-tabs { display: inline-flex; background: #eef0f5; border-radius: 10px; padding: 3px; gap: 3px; }
+  .mode-tabs button { border: none; background: transparent; padding: 7px 16px; border-radius: 8px; font-size: .88rem; font-weight: 600; color: var(--muted); cursor: pointer; }
+  .mode-tabs button.active { background: var(--card); color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+
+  /* 表格 */
+  .table-wrap { padding: 8px 8px 16px; overflow-x: auto; }
+  table.data { border-collapse: separate; border-spacing: 0; font-size: .88rem; }
+  table.data th, table.data td { border: 1px solid var(--border); padding: 6px 10px; text-align: right; white-space: nowrap; background: #fff; min-width: 56px; position: relative; }
+  table.data th { background: #f0f3ff; font-weight: 700; }
+  table.data th.row-head, table.data td.row-head { background: #f0f3ff; font-weight: 700; text-align: center; position: sticky; left: 0; z-index: 1; }
+  table.data td.row-head { background: #f7f8fc; }
+  table.data td .cell-val { outline: none; display: inline-block; min-width: 18px; }
+  table.data td .cell-val:focus { background: #fffbe6; box-shadow: inset 0 0 0 2px var(--warn); }
+
+  /* 驗算結果 */
+  table.data td.cell-ok { background: #eafaf1; font-weight: 700; color: #1a6640; }
+  table.data td.cell-error { background: #fdedec; font-weight: 700; color: var(--error); }
+  /* 低信心格：左側橘線，不蓋掉驗算底色 */
+  table.data td.cell-low { box-shadow: inset 3px 0 0 var(--warn); }
+  table.data td.flash { animation: flash 1s ease; }
+  @keyframes flash { 0%,100% { box-shadow: none; } 30% { box-shadow: inset 0 0 0 3px var(--warn); } }
+
+  /* 累加器有效符號底色 */
+  table.data td.cell-plus { background: #e8f1fc; }
+  table.data td.cell-minus { background: #fdecea; }
+
+  /* 徽章 (角色 / 加減號) */
+  .sign-badge { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; font-weight: bold; font-size: 13px; line-height: 1; margin-left: 6px; cursor: pointer; vertical-align: middle; border: 2px solid transparent; transition: transform .12s, background .15s; user-select: none; }
+  .sign-badge:hover { transform: scale(1.15); }
+  .sign-badge.plus { background: var(--plus); color: #fff; }
+  .sign-badge.minus { background: var(--minus); color: #fff; }
+  .sign-badge.target { background: var(--target); color: #fff; }
+  .sign-badge.none { background: #e9ecef; color: #9aa3ab; border: 2px dashed #c4ccd3; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 18px 0; font-size: .78rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid #ccc; }
+
+  .error-list { padding: 0 16px 16px; list-style: none; max-height: 220px; overflow-y: auto; }
+  .error-list li { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; margin-bottom: 6px; background: #fdedec; border-radius: 6px; font-size: .88rem; border-left: 4px solid var(--error); cursor: pointer; }
+  .error-list li .ei { font-size: 1.05rem; flex-shrink: 0; }
+
+  /* 右下角浮動視窗 (累加器) */
+  #float-win { position: fixed; right: 18px; bottom: 18px; z-index: 50; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 14px 18px; min-width: 190px; display: none; }
+  .fw-title { font-size: .8rem; color: var(--muted); font-weight: 700; }
+  .fw-amount { font-size: 1.7rem; font-weight: 800; color: var(--primary); margin: 4px 0; text-align: right; word-break: break-all; }
+  .fw-meta { font-size: .78rem; color: var(--muted); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+  #file-input { display: none; }
+
+  @media (max-width: 600px) {
+    #float-win { left: 12px; right: 12px; bottom: 12px; min-width: 0; }
+    .sign-badge { width: 30px; height: 30px; font-size: 17px; margin-left: 8px; }
+    table.data { font-size: 1rem; }
+    table.data th, table.data td { padding: 10px 12px; }
+    .btn { padding: 13px 20px; font-size: 1rem; }
+    .btn-sm { padding: 9px 14px; font-size: .9rem; }
+    .fw-amount { font-size: 2rem; }
+    .upload-zone { padding: 32px 18px; }
+  }
+</style>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#4361ee">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="圖片計算器">
+</head>
+<body>
+
+<header>
+  <span class="icon">🧮</span>
+  <h1>圖片計算器 — 報表辨識與驗算</h1>
+</header>
+
+<div class="container">
+
+  <div class="upload-zone" id="drop-zone">
+    <input type="file" id="file-input" accept="image/*,application/pdf">
+    <div class="up-icon">📄</div>
+    <p>拖曳 <strong>PDF 或圖片</strong> 到此，或點擊 <strong>選擇檔案</strong></p>
+    <p style="margin-top:6px;font-size:.82rem;">PDF 直接抽文字（最準）；圖片走 OCR（備用）。<br>📱 手機點「選擇檔案 / 拍照」可直接開相機拍紙本。</p>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案 / 拍照</button>
+  </div>
+
+  <div id="preview-wrap">
+    <img id="preview-img" src="" alt="預覽">
+    <div id="pdf-note" style="display:none;">📄 已選擇 PDF：<span id="pdf-name"></span>（只處理第 1 頁）</div>
+    <div class="btn-row" style="margin-top:12px;">
+      <button class="btn" id="analyze-btn" onclick="analyzeImage()">🔍 辨識表格</button>
+    </div>
+  </div>
+
+  <div class="spinner-wrap" id="spinner">
+    <div class="spinner"></div>
+    <p style="color:var(--muted)" id="spinner-text">辨識中，請稍候…</p>
+  </div>
+
+  <div id="workspace">
+    <div id="summary"></div>
+    <div id="smart-note" class="hint" style="display:none;"></div>
+
+    <!-- 模式 + 操作說明 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="mode-tabs">
+          <button id="tab-verify" class="active" onclick="setMode('verify')">✓ 驗算</button>
+          <button id="tab-accum" onclick="setMode('accum')">🧮 累加器</button>
+        </div>
+        <div>
+          <button class="btn btn-outline btn-sm" id="smart-btn" onclick="runSmartTotals()">🪄 智慧合計</button>
+          <button class="btn btn-outline btn-sm" id="hier-btn" onclick="hierarchyCheck()">⤵ 階層自動驗算</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearAll()">↺ 清除</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="hint" id="mode-hint"></div>
+      </div>
+    </div>
+
+    <!-- 資料表格 -->
+    <div class="card">
+      <div class="card-header">
+        <span>📊 辨識結果 (可直接點數字修改)</span>
+        <button class="btn btn-outline btn-sm" onclick="resetAll()">🆕 重新辨識</button>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="table-wrap">
+        <table class="data" id="data-table"></table>
+      </div>
+    </div>
+
+    <!-- 錯誤清單 -->
+    <div class="card" id="error-card" style="display:none;">
+      <div class="card-header"><span style="color:var(--error)">⚠️ 驗算錯誤</span></div>
+      <ul class="error-list" id="error-list"></ul>
+    </div>
+  </div>
+</div>
+
+<!-- 右下角浮動視窗：累計金額（累加器模式） -->
+<div id="float-win">
+  <div class="fw-title">🧮 累計金額</div>
+  <div class="fw-amount"><span id="fw-total">0</span></div>
+  <div class="fw-meta">
+    <span>已選 <span id="fw-count">0</span> 筆</span>
+    <button class="btn btn-ghost btn-sm" onclick="clearSigns()">清除</button>
+  </div>
+</div>
+
+<script src="/static/smart_total.js"></script>
+<script>
+/* =============================================================
+   狀態
+   ============================================================= */
+let currentFile = null;
+let tableData = [], indentData = [], tableConfidence = [];
+let mode = 'verify';                 // 'verify' | 'accum'
+const numericCols = new Set();
+const percentCols = new Set();       // 百分比欄（標頭含 ％）→ 驗算自動略過
+// 驗算模式
+const colRoles = new Map();          // c -> '+' | '-' | '='
+const rowRoles = new Map();          // r -> '+' | '-' | '='
+let roleAnchor = null;               // { kind, key }：Shift 連續選取的起點
+let smartActive = false, smartInfo = null;   // 智慧合計：自動找合計列並比對
+const verifyMarks = new Map();       // "r,c" -> { ok, msg }
+let errorEntries = [];
+// 累加器模式
+const cellSigns = new Map(), colSigns = new Map(), rowSigns = new Map();
+
+const TOL_REL = 0.005, TOL_ABS = 1;  // 容差：0.5% 或 1（千元）取大
+const LOW_CONF = 0.9;                // OCR 信心低於此值 → 標示請人工核對
+
+/* =============================================================
+   數字解析
+   ============================================================= */
+function parseNum(v) {
+  if (v === null || v === undefined) return NaN;
+  let s = v.toString().trim();
+  if (s === '' || s === '-' || s === '－') return NaN;
+  if (/[a-zA-Z一-鿿]/.test(s)) return NaN;
+  if (!/^[-\d.,，()$%％\s]+$/.test(s)) return NaN;
+  s = s.replace(/[,，$\s]/g, '').replace(/[%％]/g, '');
+  if (s.startsWith('(') && s.endsWith(')')) s = '-' + s.replace(/[()]/g, '');
+  const n = parseFloat(s);
+  return isNaN(n) ? NaN : n;
+}
+function fmt(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+
+/* =============================================================
+   檔案 / 相機
+   ============================================================= */
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f && (f.type.startsWith('image/') || f.type === 'application/pdf')) loadFile(f);
+});
+document.getElementById('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+function loadFile(file) {
+  currentFile = file;
+  const img = document.getElementById('preview-img');
+  const note = document.getElementById('pdf-note');
+  if (file.type === 'application/pdf') {
+    img.style.display = 'none';
+    note.style.display = 'block';
+    document.getElementById('pdf-name').textContent = file.name;
+    document.getElementById('preview-wrap').style.display = 'block';
+    document.getElementById('workspace').style.display = 'none';
+  } else {
+    note.style.display = 'none';
+    img.style.display = 'block';
+    const reader = new FileReader();
+    reader.onload = ev => {
+      img.src = ev.target.result;
+      document.getElementById('preview-wrap').style.display = 'block';
+      document.getElementById('workspace').style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+/* =============================================================
+   辨識
+   ============================================================= */
+async function analyzeImage() {
+  if (!currentFile) { alert('請先選擇 PDF / 圖片或拍照'); return; }
+  const spinner = document.getElementById('spinner'), ws = document.getElementById('workspace');
+  ws.style.display = 'none'; spinner.style.display = 'flex';
+  document.getElementById('analyze-btn').disabled = true;
+  try {
+    const form = new FormData(); form.append('file', currentFile);
+    const resp = await fetch('/analyze', { method: 'POST', body: form });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || '伺服器錯誤');
+    tableData = data.table;
+    indentData = data.indent || [];
+    tableConfidence = data.confidence || [];
+    computeNumericCols();
+    clearAll();
+    ws.style.display = 'block';
+    const src = data.method === 'pdf' ? 'PDF 直接抽取' : 'OCR 辨識';
+    const low = lowConfidenceCount();
+    const lowNote = low ? `　⚠️ ${low} 格低信心，已標示請核對。` : '';
+    renderSummary({ kind: low ? 'warn' : 'info', text: `${src}完成 — 共 ${tableData.length} 列 × ${maxCols()} 欄。${lowNote}` });
+    render();
+    runSmartTotals();
+    ws.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
+    ws.style.display = 'block';
+  } finally {
+    spinner.style.display = 'none';
+    document.getElementById('analyze-btn').disabled = false;
+  }
+}
+
+function resetAll() {
+  document.getElementById('preview-wrap').style.display = 'none';
+  document.getElementById('workspace').style.display = 'none';
+  document.getElementById('file-input').value = '';
+  currentFile = null; tableData = []; indentData = []; tableConfidence = [];
+  clearAll();
+}
+
+function maxCols() { return Math.max(...tableData.map(r => r.length), 0); }
+
+function lowConfidence(r, c) {
+  const row = tableConfidence[r];
+  const score = row ? row[c] : undefined;
+  return typeof score === 'number' && score < LOW_CONF ? score : null;
+}
+function lowConfidenceCount() {
+  let n = 0;
+  for (let r = 0; r < tableData.length; r++)
+    for (let c = 0; c < tableData[r].length; c++)
+      if (lowConfidence(r, c) !== null) n++;
+  return n;
+}
+
+function computeNumericCols() {
+  numericCols.clear(); percentCols.clear();
+  const cols = maxCols();
+  for (let c = 0; c < cols; c++) {
+    let n = 0, isPct = false;
+    for (const row of tableData) {
+      if (!isNaN(parseNum(row[c]))) n++;
+      const t = (row[c] ?? '').toString().trim();
+      if (t === '％' || t === '%') isPct = true;    // 標頭的百分比標記
+    }
+    if (n >= 2) numericCols.add(c);
+    if (isPct) percentCols.add(c);
+  }
+}
+
+/* =============================================================
+   模式切換 / 清除
+   ============================================================= */
+function setMode(m) {
+  mode = m;
+  document.getElementById('tab-verify').classList.toggle('active', m === 'verify');
+  document.getElementById('tab-accum').classList.toggle('active', m === 'accum');
+  document.getElementById('hier-btn').style.display = m === 'verify' ? '' : 'none';
+  document.getElementById('smart-btn').style.display = m === 'verify' ? '' : 'none';
+  clearAll();
+}
+
+function clearAll() {
+  colRoles.clear(); rowRoles.clear(); verifyMarks.clear(); errorEntries = [];
+  roleAnchor = null;
+  smartActive = false; smartInfo = null;
+  cellSigns.clear(); colSigns.clear(); rowSigns.clear();
+  document.getElementById('error-card').style.display = 'none';
+  FloatingWindow.update();
+  updateHint();
+  renderSmartNote();
+  if (tableData.length) render();
+}
+
+function updateHint() {
+  const h = document.getElementById('mode-hint');
+  if (mode === 'verify') {
+    h.innerHTML = '👉 點 <strong>欄號</strong> 或 <strong>列號</strong> 旁徽章循環設定角色：'
+      + '<span style="color:var(--plus);font-weight:700">＋加</span> → '
+      + '<span style="color:var(--minus);font-weight:700">−減</span> → '
+      + '<span style="color:var(--target);font-weight:700">＝合計</span> → ○取消。'
+      + '設定後自動比對標 ✅/❌（容差 0.5% 或 1）。<br>'
+      + '例：橫向增減 → 本年<span style="color:var(--plus)">＋</span>、上年<span style="color:var(--minus)">−</span>、增減<span style="color:var(--target)">＝</span>。'
+      + '縱向小計 → 點各項目列。<br>'
+      + '<strong>連續選取</strong>：先點起始列徽章（例：＋），再 Shift＋點結束列，整段列會套用起始列的角色。<br>'
+      + '<strong>🪄 智慧合計</strong>：自動找出「合計/小計/總計/總額」列並試算比對；直接改數字會重新計算，可再用列徽章手動調整。<br>'
+      + '<strong>⤵ 階層自動驗算</strong>：自動用縮排層級驗證「父項 = 各子項加總」（PDF 來源最準）。';
+  } else {
+    h.innerHTML = '👉 點數字旁徽章循環 <span style="color:var(--muted);font-weight:700">○</span>→'
+      + '<span style="color:var(--plus);font-weight:700">＋</span>→'
+      + '<span style="color:var(--minus);font-weight:700">−</span>，右下角即時顯示累計金額。'
+      + '亦可點欄號/列號整欄列套用（優先序：儲存格 &gt; 欄 &gt; 列）。';
+  }
+}
+
+/* =============================================================
+   渲染
+   ============================================================= */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function render() { mode === 'verify' ? renderVerify() : renderAccum(); }
+
+function roleBadge(kind, key) {
+  const role = (kind === 'col' ? colRoles : rowRoles).get(key);
+  const cls = role === '+' ? 'plus' : role === '-' ? 'minus' : role === '=' ? 'target' : 'none';
+  const txt = role === '+' ? '＋' : role === '-' ? '−' : role === '=' ? '＝' : '○';
+  return `<span class="sign-badge ${cls}" onclick="onRole('${kind}',${key},event)" title="點擊：＋ → − → ＝ → ○">${txt}</span>`;
+}
+
+function legendLow() {
+  return tableConfidence.length
+    ? '<span><i style="background:#fff7e0;border-color:var(--warn)"></i>低信心（建議核對）</span>'
+    : '';
+}
+
+function legendSmart() {
+  return smartActive
+    ? '<span><i style="background:#eafaf1;border-color:#a9dfbf"></i>智慧合計已比對</span>'
+    : '';
+}
+
+function renderVerify() {
+  document.getElementById('legend').innerHTML =
+    '<span><i style="background:#eafaf1"></i>驗算正確</span><span><i style="background:#fdedec"></i>驗算錯誤</span>'
+    + legendLow() + legendSmart();
+  const table = document.getElementById('data-table'), cols = maxCols();
+  let html = '<thead><tr><th class="row-head">列＼欄</th>';
+  for (let c = 0; c < cols; c++)
+    html += `<th>${c + 1}${numericCols.has(c) ? roleBadge('col', c) : ''}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let r = 0; r < tableData.length; r++) {
+    html += `<tr><td class="row-head">${r + 1}${roleBadge('row', r)}</td>`;
+    for (let c = 0; c < cols; c++) {
+      const v = tableData[r][c] ?? '';
+      const mark = verifyMarks.get(r + ',' + c);
+      const conf = lowConfidence(r, c);
+      const cls = [
+        mark ? (mark.ok ? 'cell-ok' : 'cell-error') : '',
+        conf !== null ? 'cell-low' : '',
+      ].filter(Boolean).join(' ');
+      const titles = [];
+      if (mark && !mark.ok) titles.push(mark.msg);
+      if (conf !== null) titles.push(`OCR 信心 ${Math.round(conf * 100)}%，建議核對`);
+      const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
+      html += `<td class="${cls}" data-r="${r}" data-c="${c}"${title}>`
+        + `<span class="cell-val" contenteditable="true" onblur="onCellEdit(this,${r},${c})">${escapeHtml(v)}</span></td>`;
+    }
+    html += '</tr>';
+  }
+  table.innerHTML = html + '</tbody>';
+}
+
+function renderAccum() {
+  document.getElementById('legend').innerHTML =
+    '<span><i style="background:#e8f1fc"></i>＋ 加項</span><span><i style="background:#fdecea"></i>− 減項</span>'
+    + legendLow();
+  const table = document.getElementById('data-table'), cols = maxCols();
+  let html = '<thead><tr><th class="row-head">列＼欄</th>';
+  for (let c = 0; c < cols; c++)
+    html += `<th>${c + 1}${numericCols.has(c) ? signBadge('col', c) : ''}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let r = 0; r < tableData.length; r++) {
+    html += `<tr><td class="row-head">${r + 1}${signBadge('row', r)}</td>`;
+    for (let c = 0; c < cols; c++) {
+      const v = tableData[r][c] ?? '';
+      const numeric = !isNaN(parseNum(v));
+      const eff = effectiveSign(r, c);
+      const conf = lowConfidence(r, c);
+      const cls = [
+        numeric && eff === 1 ? 'cell-plus' : numeric && eff === 2 ? 'cell-minus' : '',
+        conf !== null ? 'cell-low' : '',
+      ].filter(Boolean).join(' ');
+      const title = conf !== null ? ` title="OCR 信心 ${Math.round(conf * 100)}%，建議核對"` : '';
+      html += `<td class="${cls}" data-r="${r}" data-c="${c}"${title}>`
+        + `<span class="cell-val" contenteditable="true" onblur="onCellEdit(this,${r},${c})">${escapeHtml(v)}</span>`
+        + (numeric ? signBadge('cell', r + ',' + c) : '') + '</td>';
+    }
+    html += '</tr>';
+  }
+  table.innerHTML = html + '</tbody>';
+}
+
+/* =============================================================
+   驗算模式
+   ============================================================= */
+function onRole(kind, key, event) {
+  if (event) event.stopPropagation();
+  smartActive = false; smartInfo = null; renderSmartNote();  // 改用手動選取
+  const map = kind === 'col' ? colRoles : rowRoles;
+  const other = kind === 'col' ? rowRoles : colRoles;
+  if (other.size) other.clear();           // 欄、列互斥
+
+  // Shift＋點列號：把起點到目前列整段套成同一個角色
+  if (event && event.shiftKey && kind === 'row' && roleAnchor && roleAnchor.kind === 'row') {
+    event.preventDefault();
+    const role = rowRoles.get(roleAnchor.key) || '+';
+    const from = Math.min(roleAnchor.key, key), to = Math.max(roleAnchor.key, key);
+    for (let r = from; r <= to; r++) rowRoles.set(r, role);
+    runVerify();
+    render();
+    return;
+  }
+
+  const cur = map.get(key);
+  if (!cur) map.set(key, '+');
+  else if (cur === '+') map.set(key, '-');
+  else if (cur === '-') map.set(key, '=');
+  else map.delete(key);
+  roleAnchor = { kind, key };
+  runVerify();
+  render();
+}
+
+function check(r, c, calc, actual) {
+  const tol = Math.max(TOL_ABS, Math.abs(actual) * TOL_REL);
+  const ok = Math.abs(actual - calc) <= tol;
+  verifyMarks.set(r + ',' + c, { ok, msg: ok ? '' :
+    `第 ${r + 1} 列 / 第 ${c + 1} 欄 — 應為 ${fmt(calc)}，實際 ${fmt(actual)}（差 ${actual - calc >= 0 ? '+' : ''}${fmt(actual - calc)}）` });
+  if (!ok) errorEntries.push({ r, c, msg: verifyMarks.get(r + ',' + c).msg });
+}
+
+function runVerify() {
+  verifyMarks.clear(); errorEntries = [];
+  const colT = [...colRoles].find(([, v]) => v === '=');
+  const rowT = [...rowRoles].find(([, v]) => v === '=');
+  const hasColSrc = [...colRoles.values()].some(v => v === '+' || v === '-');
+  const hasRowSrc = [...rowRoles.values()].some(v => v === '+' || v === '-');
+
+  if (colT && hasColSrc) {
+    const target = colT[0];
+    for (let r = 0; r < tableData.length; r++) {
+      const tv = parseNum(tableData[r][target]);
+      if (isNaN(tv)) continue;
+      let sum = 0, has = false;
+      for (const [c, role] of colRoles) {
+        if (role === '=') continue;
+        const v = parseNum(tableData[r][c]);
+        if (!isNaN(v)) { sum += role === '-' ? -v : v; has = true; }
+      }
+      if (has) check(r, target, sum, tv);
+    }
+  } else if (rowT && hasRowSrc) {
+    const target = rowT[0];
+    for (const c of numericCols) {
+      if (percentCols.has(c)) continue;
+      const tv = parseNum((tableData[target] || [])[c]);
+      if (isNaN(tv)) continue;
+      let sum = 0, has = false;
+      for (const [r, role] of rowRoles) {
+        if (role === '=') continue;
+        const v = parseNum((tableData[r] || [])[c]);
+        if (!isNaN(v)) { sum += role === '-' ? -v : v; has = true; }
+      }
+      if (has) check(target, c, sum, tv);
+    }
+  }
+  showResults();
+}
+
+/* =============================================================
+   智慧合計：自動找合計列，用幾種算法試算後比對
+   ============================================================= */
+const SMART_TOL_ABS = 2, SMART_TOL_REL = 0.00001;
+
+function runSmartTotals() {
+  if (mode !== 'verify' || !tableData.length || typeof SmartTotals === 'undefined') return;
+  colRoles.clear(); rowRoles.clear(); verifyMarks.clear(); errorEntries = [];
+  roleAnchor = null;
+  const info = SmartTotals.evaluate(tableData, {
+    parse: parseNum,
+    numericCols: [...numericCols],
+    percentCols,
+    tolerance: v => Math.max(SMART_TOL_ABS, Math.abs(v) * SMART_TOL_REL),
+  });
+  info.confirmed.forEach(hit => verifyMarks.set(hit.r + ',' + hit.c, { ok: true, msg: '' }));
+  smartInfo = info;
+  smartActive = info.totalRows.length > 0;
+  render();
+  renderSmartNote();
+  document.getElementById('error-card').style.display = 'none';
+}
+
+function renderSmartNote() {
+  const el = document.getElementById('smart-note');
+  if (!smartActive || !smartInfo) {
+    el.style.display = 'none'; el.innerHTML = '';
+    return;
+  }
+  const { totalRows, confirmed, unconfirmed } = smartInfo;
+  const checked = confirmed.length + unconfirmed.length;
+  let html = `🪄 <strong>智慧合計</strong>：找到 ${totalRows.length} 個合計列，`
+    + (checked === 0
+        ? '但沒有可試算的數字（可手動點列/欄驗算）。'
+        : `已自動比對 ${confirmed.length} 格`
+          + (unconfirmed.length ? `，<strong>${unconfirmed.length} 格需人工確認</strong>` : '，全部相符')
+          + '。可直接修改數字或點列號手動調整。');
+  if (unconfirmed.length) {
+    const items = unconfirmed.slice(0, 6).map(x => {
+      const near = x.candidates.slice()
+        .sort((a, b) => Math.abs(a - x.actual) - Math.abs(b - x.actual))
+        .slice(0, 3);
+      return `<li>第 ${x.r + 1} 列／第 ${x.c + 1} 欄「${escapeHtml(x.label)}」：`
+        + `實際 ${fmt(x.actual)}，試算 ${near.map(fmt).join(' / ')}</li>`;
+    }).join('');
+    html += `<ul style="margin:6px 0 0 18px;line-height:1.7">${items}</ul>`;
+    if (unconfirmed.length > 6) html += `<div style="margin-top:2px">…另有 ${unconfirmed.length - 6} 格</div>`;
+  }
+  el.innerHTML = html;
+  el.style.display = 'block';
+}
+
+function hierarchyCheck() {
+  if (!tableData.length) return;
+  if (!indentData.length || indentData.every(x => !x)) {
+    alert('此來源沒有可靠的縮排層級（建議用 PDF）。\n圖片來源請改用「🪄 智慧合計」或手動點選欄/列驗算。');
+    return;
+  }
+  setMode('verify');
+  verifyMarks.clear(); errorEntries = [];
+  colRoles.clear(); rowRoles.clear();
+  const n = tableData.length, IND_TOL = 3;
+  for (let r = 0; r < n; r++) {
+    if (r + 1 >= n || indentData[r + 1] - indentData[r] <= IND_TOL) continue; // 非父項
+    const childLevel = indentData[r + 1];
+    for (const c of numericCols) {
+      if (percentCols.has(c)) continue;
+      let sum = 0, has = false;
+      for (let k = r + 1; k < n; k++) {
+        if (indentData[k] - indentData[r] <= IND_TOL) break;          // 離開此父項範圍
+        if (Math.abs(indentData[k] - childLevel) <= IND_TOL) {         // 直接子項
+          const v = parseNum(tableData[k][c]);
+          if (!isNaN(v)) { sum += v; has = true; }
+        }
+      }
+      if (has) {
+        const tv = parseNum(tableData[r][c]);
+        if (!isNaN(tv)) check(r, c, sum, tv);
+      }
+    }
+  }
+  render();
+  showResults('階層');
+}
+
+function showResults(label) {
+  const errs = errorEntries;
+  const okCount = [...verifyMarks.values()].filter(m => m.ok).length;
+  const pre = label ? `${label}驗算` : '驗算';
+  if (!verifyMarks.size) {
+    renderSummary({ kind: 'warn', text: `⚠️ ${pre}未檢查到任何合計（請確認選取或來源）。` });
+    document.getElementById('error-card').style.display = 'none';
+    return;
+  }
+  if (errs.length) {
+    const total = errs.reduce((s, e) => s + 0, 0);
+    renderSummary({ kind: 'err', text: `❌ ${pre}發現 ${errs.length} 處不符，正確 ${okCount} 處。` });
+    document.getElementById('error-list').innerHTML = errs.map(e =>
+      `<li onclick="scrollToCell(${e.r},${e.c})"><span class="ei">🔴</span><span>${e.msg}</span></li>`).join('');
+    document.getElementById('error-card').style.display = 'block';
+  } else {
+    renderSummary({ kind: 'ok', text: `✅ ${pre}全部正確 — 共確認 ${okCount} 處合計。` });
+    document.getElementById('error-card').style.display = 'none';
+  }
+}
+
+function scrollToCell(r, c) {
+  const td = document.querySelector(`td[data-r="${r}"][data-c="${c}"]`);
+  if (td) { td.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' }); td.classList.remove('flash'); void td.offsetWidth; td.classList.add('flash'); }
+}
+
+/* =============================================================
+   累加器模式
+   ============================================================= */
+function signBadge(kind, key) {
+  let state;
+  if (kind === 'col') state = colSigns.get(key) || 0;
+  else if (kind === 'row') state = rowSigns.get(key) || 0;
+  else state = cellSigns.get(key) || 0;
+  const cls = state === 1 ? 'plus' : state === 2 ? 'minus' : 'none';
+  const txt = state === 1 ? '＋' : state === 2 ? '−' : '○';
+  return `<span class="sign-badge ${cls}" onclick="onSign('${kind}','${key}',event)" title="點擊：○ → ＋ → −">${txt}</span>`;
+}
+function effectiveSign(r, c) {
+  const cs = cellSigns.get(r + ',' + c); if (cs) return cs;
+  const colS = colSigns.get(c); if (colS) return colS;
+  const rowS = rowSigns.get(r); if (rowS) return rowS;
+  return 0;
+}
+function onSign(kind, key, event) {
+  if (event) event.stopPropagation();
+  let map, k;
+  if (kind === 'col') { map = colSigns; k = Number(key); }
+  else if (kind === 'row') { map = rowSigns; k = Number(key); }
+  else { map = cellSigns; k = key; }
+  const next = ((map.get(k) || 0) + 1) % 3;
+  if (next === 0) map.delete(k); else map.set(k, next);
+  render(); FloatingWindow.update();
+}
+function clearSigns() { cellSigns.clear(); colSigns.clear(); rowSigns.clear(); if (tableData.length) render(); FloatingWindow.update(); }
+
+function calculateSignedSum() {
+  let total = 0, count = 0;
+  for (let r = 0; r < tableData.length; r++) {
+    const row = tableData[r]; if (!row) continue;
+    for (let c = 0; c < row.length; c++) {
+      const sign = effectiveSign(r, c); if (sign === 0) continue;
+      const v = parseNum(row[c]); if (isNaN(v)) continue;
+      total += sign === 1 ? v : -v; count++;
+    }
+  }
+  return { total, count };
+}
+const FloatingWindow = {
+  update() {
+    const el = document.getElementById('float-win');
+    if (mode !== 'accum') { el.style.display = 'none'; return; }
+    const { total, count } = calculateSignedSum();
+    if (count === 0) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    document.getElementById('fw-total').textContent = fmt(total);
+    document.getElementById('fw-count').textContent = count;
+  },
+};
+
+/* =============================================================
+   共用
+   ============================================================= */
+function onCellEdit(span, r, c) {
+  const newVal = span.innerText.trim();
+  while (tableData[r].length <= c) tableData[r].push('');
+  if (tableData[r][c] === newVal) return;
+  tableData[r][c] = newVal;
+  if (tableConfidence[r]) {
+    while (tableConfidence[r].length <= c) tableConfidence[r].push(1);
+    tableConfidence[r][c] = 1;   // 人工確認過，不再標示低信心
+  }
+  computeNumericCols();
+  if (smartActive) { runSmartTotals(); return; }
+  if (mode === 'verify') runVerify(); else FloatingWindow.update();
+  render();
+}
+function renderSummary({ kind, text }) {
+  document.getElementById('summary').innerHTML = `<div class="summary-banner ${kind}">${text}</div>`;
+}
+
+updateHint();
+
+// Register service worker for PWA
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
+}
+</script>
+</body>
+</html>
