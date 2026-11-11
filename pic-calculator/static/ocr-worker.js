@@ -8,8 +8,10 @@ import {
   PaddleOcrService,
   V6_SMALL_MODEL,
   V6_MEDIUM_MODEL,
+  getDefaultWebExecutionProviders,
 } from 'https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/+esm';
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/ort.all.bundle.min.mjs';
+// 與 ppu 內部使用同一個 onnxruntime-web 模組（同版本、同 URL），避免載入兩份 runtime
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/+esm';
 
 const QUALITY = {
   tiny: { label: '快速', size: '6MB', model: null },
@@ -23,7 +25,7 @@ const LAYOUT_MODEL = 'https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolv
 const TABLE_CLASS = 8, FALLBACK_CLASSES = [1, 18], TABLE_MIN_SCORE = 0.5;
 
 let service = null, serviceQuality = null, toTraditional = null;
-let layoutSessionPromise = null;
+let layoutSession = null, layoutEps = null;
 
 const postStatus = (text) => self.postMessage({ type: 'status', text });
 
@@ -71,17 +73,40 @@ async function ensureService(quality) {
 /* =============================================================
    表格偵測（PP-DocLayout-S）
    ============================================================= */
+async function createLayoutSession(eps) {
+  return ort.InferenceSession.create(LAYOUT_MODEL, {
+    executionProviders: eps,
+    logSeverityLevel: 3,
+  });
+}
+
 async function getLayoutSession() {
-  if (!layoutSessionPromise) {
-    layoutSessionPromise = ort.InferenceSession.create(LAYOUT_MODEL, {
-      executionProviders: ['wasm'],
-      logSeverityLevel: 3,
-    }).catch((err) => {
-      layoutSessionPromise = null;
-      throw err;
-    });
+  if (layoutSession) return layoutSession;
+  const eps = await getDefaultWebExecutionProviders();   // WebGPU 可用時為 ['webgpu','wasm']
+  try {
+    layoutSession = await createLayoutSession(eps);
+    layoutEps = eps;
+  } catch (err) {
+    postStatus('WebGPU 不支援版面模型，改用 WASM…');
+    layoutSession = await createLayoutSession(['wasm']);
+    layoutEps = ['wasm'];
   }
-  return layoutSessionPromise;
+  return layoutSession;
+}
+
+async function runLayout(makeInputs) {
+  const session = await getLayoutSession();
+  try {
+    return await session.run(makeInputs());
+  } catch (err) {
+    if (!layoutEps || !layoutEps.includes('webgpu')) throw err;
+    // layout 模型在部分 WebGPU 後端會因 MatMul 不支援而失敗，退回 WASM 重跑一次
+    postStatus('WebGPU 執行版面模型失敗，改用 WASM…');
+    try { await layoutSession.release?.(); } catch (releaseErr) { /* 忽略 */ }
+    layoutSession = await createLayoutSession(['wasm']);
+    layoutEps = ['wasm'];
+    return await layoutSession.run(makeInputs());
+  }
 }
 
 async function detectTable(bitmap) {
@@ -97,11 +122,10 @@ async function detectTable(bitmap) {
       data[ch * N * N + i] = (px[i * 4 + ch] / 255 - mean[ch]) / std[ch];
     }
   }
-  const session = await getLayoutSession();
-  const out = await session.run({
+  const out = await runLayout(() => ({
     image: new ort.Tensor('float32', data, [1, 3, N, N]),
     scale_factor: new ort.Tensor('float32', [N / H, N / W], [1, 2]),
-  });
+  }));
   const det = Object.values(out).find((t) => t.dims.length === 2 && t.dims[1] === 6);
   if (!det) return null;
 
