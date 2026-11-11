@@ -790,10 +790,8 @@ function capturePhoto() {
 /* =============================================================
    OCR
    ============================================================= */
-// PP-OCRv6 直接在瀏覽器執行 (onnxruntime-web)，不需後端；模型首次下載後由 sw.js 快取
-// ponytail: 在主執行緒跑，辨識時頁面會略頓；若嫌卡再搬進 Web Worker
-let ocrService = null, toTraditional = null;
-// tiny 6MB 最快；small 30MB 適合密集表格；medium 139MB 適合小字/低光照片
+// PP-OCRv6 在 Web Worker 執行：模型初始化與 recognize() 不佔用畫面執行緒
+// Worker 內用 jsDelivr +esm 版本，避免 Worker 沒有 import map 的問題
 const OCR_QUALITY_INFO = {
   tiny: { label: '快速', size: '6MB' },
   small: { label: '標準', size: '30MB' },
@@ -806,47 +804,70 @@ try {
 } catch (err) { /* 隱私模式下 localStorage 可能不可用 */ }
 // 平均辨識信心值。實測清楚的圖 ≥ 0.96，解析度不足或模糊的圖 ≤ 0.75，取 0.85 為界
 let ocrConfidence = 1;
-const LOW_CONFIDENCE = 0.85, MIN_CONFIDENCE = 0.5;
+const LOW_CONFIDENCE = 0.85;
+
+let ocrWorker = null, ocrJobSeq = 0;
+const ocrPending = new Map();
+
+function getOcrWorker() {
+  if (ocrWorker) return ocrWorker;
+  if (typeof Worker === 'undefined') throw new Error('此瀏覽器不支援 Web Worker，請更新瀏覽器。');
+  const worker = new Worker('ocr-worker.js', { type: 'module' });
+  worker.onmessage = (event) => {
+    const msg = event.data || {};
+    if (msg.type === 'status') {
+      const el = document.getElementById('spinner-text');
+      if (el && msg.text) el.textContent = msg.text;
+      return;
+    }
+    const job = ocrPending.get(msg.id);
+    if (!job) return;
+    ocrPending.delete(msg.id);
+    if (msg.type === 'result') job.resolve(msg);
+    else job.reject(new Error(msg.message || '背景 OCR 失敗'));
+  };
+  worker.onerror = (event) => {
+    const message = event?.message || '背景 OCR 發生錯誤，請重新整理。';
+    for (const job of ocrPending.values()) job.reject(new Error(message));
+    ocrPending.clear();
+    try { worker.terminate(); } catch (err) { /* 忽略 */ }
+    if (ocrWorker === worker) ocrWorker = null;
+    const el = document.getElementById('spinner-text');
+    if (el) el.textContent = message;
+  };
+  ocrWorker = worker;
+  return worker;
+}
+
 async function ocrWords(img) {
+  const info = OCR_QUALITY_INFO[ocrQuality];
   const text = document.getElementById('spinner-text');
-  if (!ocrService) {
-    const info = OCR_QUALITY_INFO[ocrQuality];
-    text.textContent = `載入${info.label}模型（首次約 ${info.size}）…`;
-    const mod = await import('https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/index.js');
-    const preset = ocrQuality === 'medium' ? mod.V6_MEDIUM_MODEL
-      : ocrQuality === 'small' ? mod.V6_SMALL_MODEL : null;
-    const svc = preset ? new mod.PaddleOcrService({ model: preset }) : new mod.PaddleOcrService();
-    // 模型常把繁體字讀成簡體（资、额、税…），辨識後用 OpenCC 轉回臺灣繁體
-    const [opencc] = await Promise.all([
-      import('https://cdn.jsdelivr.net/npm/opencc-js@1.4.2/dist/esm/cn2t.js'),
-      svc.initialize(),
-    ]);
-    toTraditional = opencc.Converter({ from: 'cn', to: 'tw' });
-    ocrService = svc;
-  }
-  text.textContent = '辨識中，請稍候…';
+  text.textContent = `載入${info.label}模型（首次約 ${info.size}）…`;
+  // 透視矯正仍在主執行緒（毫秒級）；模型與辨識搬到 Worker
   const canvas = rectifiedCanvas(img);
-  // per-box：逐框辨識。預設的逐行合併遇到歪斜 2° 以上的照片會整張讀成亂碼
-  // 先拿全部結果算平均信心值（判斷圖片品質），再自行濾掉低信心的雜訊
-  const res = await ocrService.recognize(canvas, { flatten: true, minimumConfidence: 0, strategy: 'per-box' });
-  ocrConfidence = res.results.length ? res.results.reduce((a, r) => a + r.confidence, 0) / res.results.length : 1;
-  return res.results.filter(r => r.confidence >= MIN_CONFIDENCE && r.text.trim()).map(r => {
-    const { x, y, width: w, height: h } = r.box;
-    return { text: cleanText(r.text), x1: x, x2: x + w, y1: y, y2: y + h, cx: x + w / 2, cy: y + h / 2, h, score: r.confidence };
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((b) => b ? resolve(b) : reject(new Error('影像轉換失敗')), 'image/png');
   });
+  const buffer = await blob.arrayBuffer();
+  const worker = getOcrWorker();
+  const id = ++ocrJobSeq;
+  const msg = await new Promise((resolve, reject) => {
+    ocrPending.set(id, { resolve, reject });
+    try {
+      worker.postMessage({ type: 'ocr', id, quality: ocrQuality, buffer }, [buffer]);
+    } catch (err) {
+      ocrPending.delete(id);
+      reject(err);
+    }
+  });
+  ocrConfidence = msg.confidence;
+  return msg.results;
 }
 
 function setOcrQuality(q) {
   if (!OCR_QUALITY_INFO[q]) return;
   ocrQuality = q;
   try { localStorage.setItem('pcOcrQuality', q); } catch (err) { /* 忽略 */ }
-  if (ocrService) {
-    try {
-      const p = ocrService.destroy?.();
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-    } catch (err) { /* 忽略 */ }
-    ocrService = null;   // 下次辨識用新 tier 重新初始化
-  }
   const note = document.getElementById('quality-note');
   const suffix = tableData.length ? '；請按「辨識表格」套用' : '';
   if (note) note.textContent = (q === 'tiny' ? '最快；適合清楚截圖'
@@ -858,10 +879,6 @@ function setOcrQuality(q) {
 
 /* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
-// 轉繁體，並去掉中文字（及括號）之間多出來的空白
-const cleanText = t => toTraditional(t.trim())
-  .replace(/(?:線|綫|综|総)計$/, '總計')   // 模型常把「總計」讀成「線計」
-  .replace(/(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef(（])\s+|\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef)）])/g, '');
 function buildTable(words) {
   if (!words.length) return { data: [], confidence: [] };
   const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
