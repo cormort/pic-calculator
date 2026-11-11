@@ -56,6 +56,10 @@
   .upload-zone strong { color: var(--primary); }
 
   .btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+  .quality-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .quality-row label { font-size: .85rem; font-weight: 600; color: var(--muted); }
+  .quality-row select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); font-size: .9rem; }
+  .quality-row .note { font-size: .78rem; color: var(--muted); }
   .btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 10px 20px; border-radius: 8px; font-size: .92rem; font-weight: 600;
@@ -274,6 +278,15 @@
     <p id="crop-hint"></p>
     <div class="btn-row" style="margin-top:6px;">
       <button class="btn btn-ghost btn-sm" onclick="setQuad(FULL_QUAD)">↺ 框選整張圖</button>
+    </div>
+    <div class="quality-row">
+      <label for="ocr-quality">辨識精度</label>
+      <select id="ocr-quality" onchange="setOcrQuality(this.value)">
+        <option value="tiny">快速（約 6MB）</option>
+        <option value="small">標準（約 30MB）</option>
+        <option value="medium">高精度（約 139MB，較慢）</option>
+      </select>
+      <span id="quality-note" class="note">標準：密集表格／一般拍照</span>
     </div>
     <div class="btn-row" style="margin-top:12px;">
       <button class="btn" id="analyze-btn" onclick="analyzeImage()">🔍 辨識表格</button>
@@ -780,16 +793,30 @@ function capturePhoto() {
 // PP-OCRv6 直接在瀏覽器執行 (onnxruntime-web)，不需後端；模型首次下載後由 sw.js 快取
 // ponytail: 在主執行緒跑，辨識時頁面會略頓；若嫌卡再搬進 Web Worker
 let ocrService = null, toTraditional = null;
+// tiny 6MB 最快；small 30MB 適合密集表格；medium 139MB 適合小字/低光照片
+const OCR_QUALITY_INFO = {
+  tiny: { label: '快速', size: '6MB' },
+  small: { label: '標準', size: '30MB' },
+  medium: { label: '高精度', size: '139MB' },
+};
+let ocrQuality = 'small';
+try {
+  const saved = localStorage.getItem('pcOcrQuality');
+  if (saved && OCR_QUALITY_INFO[saved]) ocrQuality = saved;
+} catch (err) { /* 隱私模式下 localStorage 可能不可用 */ }
 // 平均辨識信心值。實測清楚的圖 ≥ 0.96，解析度不足或模糊的圖 ≤ 0.75，取 0.85 為界
 let ocrConfidence = 1;
 const LOW_CONFIDENCE = 0.85, MIN_CONFIDENCE = 0.5;
 async function ocrWords(img) {
   const text = document.getElementById('spinner-text');
   if (!ocrService) {
-    text.textContent = '載入辨識模型中（首次約 6MB）…';
-    const { PaddleOcrService } = await import('https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/index.js');
-    const svc = new PaddleOcrService();
-    // tiny 模型常把繁體字讀成簡體（资、额、税…），辨識後用 OpenCC 轉回臺灣繁體
+    const info = OCR_QUALITY_INFO[ocrQuality];
+    text.textContent = `載入${info.label}模型（首次約 ${info.size}）…`;
+    const mod = await import('https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/index.js');
+    const preset = ocrQuality === 'medium' ? mod.V6_MEDIUM_MODEL
+      : ocrQuality === 'small' ? mod.V6_SMALL_MODEL : null;
+    const svc = preset ? new mod.PaddleOcrService({ model: preset }) : new mod.PaddleOcrService();
+    // 模型常把繁體字讀成簡體（资、额、税…），辨識後用 OpenCC 轉回臺灣繁體
     const [opencc] = await Promise.all([
       import('https://cdn.jsdelivr.net/npm/opencc-js@1.4.2/dist/esm/cn2t.js'),
       svc.initialize(),
@@ -809,11 +836,31 @@ async function ocrWords(img) {
   });
 }
 
+function setOcrQuality(q) {
+  if (!OCR_QUALITY_INFO[q]) return;
+  ocrQuality = q;
+  try { localStorage.setItem('pcOcrQuality', q); } catch (err) { /* 忽略 */ }
+  if (ocrService) {
+    try {
+      const p = ocrService.destroy?.();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (err) { /* 忽略 */ }
+    ocrService = null;   // 下次辨識用新 tier 重新初始化
+  }
+  const note = document.getElementById('quality-note');
+  const suffix = tableData.length ? '；請按「辨識表格」套用' : '';
+  if (note) note.textContent = (q === 'tiny' ? '最快；適合清楚截圖'
+    : q === 'small' ? '密集表格／一般拍照（建議）'
+    : '小字、低光、難拍照片（較慢）') + suffix;
+  const st = document.getElementById('spinner-text');
+  if (st) st.textContent = `已切換為${OCR_QUALITY_INFO[q].label}模型，下次辨識會載入（約 ${OCR_QUALITY_INFO[q].size}）…`;
+}
+
 /* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
 // 轉繁體，並去掉中文字（及括號）之間多出來的空白
 const cleanText = t => toTraditional(t.trim())
-  .replace(/(?:線|綫|综|総)計$/, '總計')   // tiny 模型常把「總計」讀成「線計」
+  .replace(/(?:線|綫|综|総)計$/, '總計')   // 模型常把「總計」讀成「線計」
   .replace(/(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef(（])\s+|\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef)）])/g, '');
 function buildTable(words) {
   if (!words.length) return { data: [], confidence: [] };
@@ -939,10 +986,13 @@ async function analyzeImage() {
   if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
   const spinner = document.getElementById('spinner');
   const ws = document.getElementById('workspace');
+  const qualityEl = document.getElementById('ocr-quality');
   ws.style.display = 'none';
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
+  if (qualityEl) qualityEl.disabled = true;
   try {
+    const tierLabel = OCR_QUALITY_INFO[ocrQuality].label;
     const built = buildTable(await ocrWords(document.getElementById('preview-img')));
     tableData = built.data;
     cellConfidence = built.confidence;
@@ -955,8 +1005,8 @@ async function analyzeImage() {
     const lowCount = lowConfidenceCount();
     const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心，已用橘線標示。` : '';
     renderSummary(blurry
-      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}` }
-      : { kind: 'info', text: `辨識完成 — ${size}。${lowNote}請點擊欄號或列號進行驗算。` });
+      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}` }
+      : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}請點擊欄號或列號進行驗算。` });
     renderTable();
     runSmartTotals();
     ws.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -966,6 +1016,7 @@ async function analyzeImage() {
   } finally {
     spinner.style.display = 'none';
     document.getElementById('analyze-btn').disabled = false;
+    if (qualityEl) qualityEl.disabled = false;
   }
 }
 
@@ -1280,6 +1331,13 @@ function renderSummary({ kind, text }) {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => { if (tableData.length) renderTable(); });
 });
+
+// 初始化辨識精度選單（記住上次選擇）
+const qualitySelect = document.getElementById('ocr-quality');
+if (qualitySelect) {
+  qualitySelect.value = ocrQuality;
+  setOcrQuality(ocrQuality);
+}
 
 // Register service worker for PWA
 if ('serviceWorker' in navigator) {
