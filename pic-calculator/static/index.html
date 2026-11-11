@@ -132,6 +132,7 @@
   .field select { min-width: 200px; }
 
   .hint { font-size: .82rem; color: var(--muted); padding: 8px 12px; background: #f8f9fc; border-left: 3px solid var(--info); border-radius: 4px; }
+  #smart-note { margin-bottom: 12px; background: #f3f8ff; border-left-color: var(--primary); }
 
   /* 表格 */
   .table-wrap { padding: 8px 8px 16px; overflow-x: auto; }
@@ -163,6 +164,9 @@
   /* 驗算結果 */
   table.data td.cell-ok { background: #eafaf1; font-weight: 700; color: #1a6640; }
   table.data td.cell-error { background: #fdedec; font-weight: 700; color: var(--error); }
+  /* 低信心格：左側橘線；智慧合計：綠底 */
+  table.data td.cell-low { box-shadow: inset 3px 0 0 var(--warn); }
+  table.data td.cell-smart-ok { background: #eafaf1; }
 
   /* 列範圍 */
   table.data tbody tr.row-out td { opacity: .35; }
@@ -284,17 +288,23 @@
   <div id="workspace">
     <!-- 摘要 -->
     <div id="summary"></div>
+    <div id="smart-note" class="hint" style="display:none;"></div>
 
     <!-- 控制面板 -->
     <div class="card">
       <div class="card-header">
         <span>⚙️ 驗算設定</span>
-        <button class="btn btn-ghost btn-sm" onclick="clearSelections()">↺ 重置選取</button>
+        <div>
+          <button class="btn btn-outline btn-sm" id="smart-btn" onclick="runSmartTotals(true)">🪄 智慧合計</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearSelections()">↺ 重置選取</button>
+        </div>
       </div>
       <div class="card-body">
         <div class="hint">
           👉 點 <strong>欄號</strong>(上方) → 進行欄驗算; 點 <strong>列號</strong>(左側) → 進行列驗算。<br>
-          每個欄/列點擊循環:<span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → 取消。最後一個被選的會自動成為 <span style="color:var(--target);font-weight:700">＝</span> 合計。
+          每個欄/列點擊循環:<span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → 取消。最後一個被選的會自動成為 <span style="color:var(--target);font-weight:700">＝</span> 合計。<br>
+          <strong>連續選取</strong>：Shift＋點欄號/列號可一次選一整段；若已先點合計列，會把它保留在最後當合計。<br>
+          <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。
         </div>
       </div>
     </div>
@@ -309,8 +319,9 @@
         <span><i style="background:#d6eaf8"></i>+ 加項</span>
         <span><i style="background:#fadbd8"></i>− 減項</span>
         <span><i style="background:#fdebd0"></i>= 合計</span>
-        <span><i style="background:#eafaf1"></i>驗算正確</span>
+        <span><i style="background:#eafaf1"></i>驗算正確／智慧合計</span>
         <span><i style="background:#fdedec"></i>驗算錯誤</span>
+        <span><i style="background:#fff7e0;border-color:#f39c12"></i>低信心（建議核對）</span>
       </div>
       <div class="table-wrap">
         <table class="data" id="data-table"></table>
@@ -326,6 +337,7 @@
 
 </div>
 
+<script src="smart_total.js"></script>
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -540,10 +552,13 @@ const Validator = {
 let currentFile = null;
 let cameraStream = null;
 let tableData = [];           // 2D array of strings
+let cellConfidence = [];      // 與 tableData 對齊的每格 OCR 信心 (0~1)
 let selectedCols = [];        // [colIdx, ...] - 順序代表加入順序，最後一個是合計
 let selectedRows = [];        // [rowIdx, ...]
 let signs = new Map();        // index -> +1 or -1
 let lastResult = null;
+let smartActive = false, smartInfo = null;   // 智慧合計
+const smartMarks = new Set();                // "r,c" -> 自動比對成功的合計
 
 /* =============================================================
    檔案 / 相機
@@ -790,16 +805,18 @@ async function ocrWords(img) {
   ocrConfidence = res.results.length ? res.results.reduce((a, r) => a + r.confidence, 0) / res.results.length : 1;
   return res.results.filter(r => r.confidence >= MIN_CONFIDENCE && r.text.trim()).map(r => {
     const { x, y, width: w, height: h } = r.box;
-    return { text: cleanText(r.text), x1: x, x2: x + w, y1: y, y2: y + h, cx: x + w / 2, cy: y + h / 2, h };
+    return { text: cleanText(r.text), x1: x, x2: x + w, y1: y, y2: y + h, cx: x + w / 2, cy: y + h / 2, h, score: r.confidence };
   });
 }
 
 /* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
 // 轉繁體，並去掉中文字（及括號）之間多出來的空白
-const cleanText = t => toTraditional(t.trim()).replace(/(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef(（])\s+|\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef)）])/g, '');
+const cleanText = t => toTraditional(t.trim())
+  .replace(/(?:線|綫|综|総)計$/, '總計')   // tiny 模型常把「總計」讀成「線計」
+  .replace(/(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef(（])\s+|\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef)）])/g, '');
 function buildTable(words) {
-  if (!words.length) return [];
+  if (!words.length) return { data: [], confidence: [] };
   const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
 
   // 校正歪斜：手機拍照很少完全水平。在 ±15° 內找出讓文字框「排成列」最整齊的角度
@@ -832,40 +849,90 @@ function buildTable(words) {
   }
   rows.push(cur);
 
-  // 同列內相鄰文字框合併成 cell
+  // 同列內相鄰文字框合併成 cell；信心取最小值
   const cellRows = rows.map(row => {
     const gapTol = Math.max(avg(row, w => w.h) * 0.7, 8);
     const cells = [];
     for (const w of row.sort((a, b) => a.x1 - b.x1)) {
       const last = cells[cells.length - 1];
       // 中文字之間不補空白（偵測常把一個詞切成數塊）
-      if (last && w.x1 - last.x2 <= gapTol) { last.text += (CJK.test(last.text.slice(-1)) || CJK.test(w.text[0]) ? '' : ' ') + w.text; last.x2 = Math.max(last.x2, w.x2); }
-      else cells.push({ text: w.text, x1: w.x1, x2: w.x2 });
+      if (last && w.x1 - last.x2 <= gapTol) {
+        last.text += (CJK.test(last.text.slice(-1)) || CJK.test(w.text[0]) ? '' : ' ') + w.text;
+        last.x2 = Math.max(last.x2, w.x2);
+        last.y1 = Math.min(last.y1, w.y1);
+        last.y2 = Math.max(last.y2, w.y2);
+        last.score = Math.min(last.score, w.score ?? 1);
+      } else {
+        cells.push({
+          text: w.text, x1: w.x1, x2: w.x2, y1: w.y1, y2: w.y2,
+          score: w.score ?? 1,
+        });
+      }
     }
-    cells.forEach(c => c.cx = (c.x1 + c.x2) / 2);
+    cells.forEach(c => { c.cx = (c.x1 + c.x2) / 2; });
     return cells;
   });
 
-  // 跨列對齊欄位：x 中心分群成欄錨點
-  const all = cellRows.flat();
-  const widths = all.map(c => c.x2 - c.x1).sort((a, b) => a - b);
-  const colTol = Math.max((widths[widths.length >> 1] || 30) * 0.6, 20);
-  const groups = [];
-  for (const cx of all.map(c => c.cx).sort((a, b) => a - b)) {
-    const g = groups[groups.length - 1];
-    if (g && cx - g[g.length - 1] <= colTol) g.push(cx); else groups.push([cx]);
-  }
-  const centers = groups.map(g => avg(g, v => v));
+  // 跨列對齊欄位：用「資料列之間沒有文字覆蓋的垂直空白帶」切欄。
+  // 表頭常置中、數字常右對齊，中心點分群會把兩者拆成不同欄；空白帶不會。
+  const numericRows = cellRows.filter(row => row.some(c => !isNaN(Validator._num(c.text))));
+  const sample = numericRows.length ? numericRows : cellRows.filter(r => r.length >= 2);
+  const intervals = (sample.length ? sample : cellRows)
+    .flatMap(row => row.map(c => [c.x1, c.x2]))
+    .sort((a, b) => a[0] - b[0]);
+  if (!intervals.length) return { data: [], confidence: [] };
 
-  return cellRows.map(row => {
-    const out = centers.map(() => '');
-    for (const c of row) {
-      let ci = 0;
-      centers.forEach((x, i) => { if (Math.abs(x - c.cx) < Math.abs(centers[ci] - c.cx)) ci = i; });
-      out[ci] = out[ci] ? out[ci] + ' ' + c.text : c.text;
+  const merged = [];
+  for (const [x1, x2] of intervals) {
+    const last = merged[merged.length - 1];
+    if (last && x1 <= last[1]) last[1] = Math.max(last[1], x2);
+    else merged.push([x1, x2]);
+  }
+  const heights = words.map(w => w.h).sort((a, b) => a - b);
+  const medH = heights[heights.length >> 1] || 20;
+  const minGap = Math.max(medH * 0.8, 12);
+  const bounds = [merged[0][0]];
+  for (let i = 1; i < merged.length; i++) {
+    if (merged[i][0] - merged[i - 1][1] >= minGap)
+      bounds.push((merged[i - 1][1] + merged[i][0]) / 2);
+  }
+  bounds.push(merged[merged.length - 1][1]);
+  const ncols = Math.max(bounds.length - 1, 1);
+
+  const colOf = cell => {
+    let best = 0, bestOverlap = -1;
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const overlap = Math.min(cell.x2, bounds[i + 1]) - Math.max(cell.x1, bounds[i]);
+      if (overlap > bestOverlap) { best = i; bestOverlap = overlap; }
     }
-    return out;
+    if (bestOverlap <= 0) {
+      let bestDist = Infinity;
+      for (let i = 0; i < bounds.length - 1; i++) {
+        const d = Math.abs((bounds[i] + bounds[i + 1]) / 2 - cell.cx);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+    }
+    return best;
+  };
+
+  const outRows = cellRows.map(row => {
+    const out = Array(ncols).fill('');
+    const conf = Array(ncols).fill(1);
+    for (const c of row) {
+      const ci = colOf(c);
+      out[ci] = out[ci] ? out[ci] + ' ' + c.text : c.text;
+      conf[ci] = Math.min(conf[ci], Number.isFinite(c.score) ? c.score : 1);
+    }
+    return { out, conf };
   });
+
+  let keep = ncols;
+  while (keep > 1 && outRows.every(r => !r.out[keep - 1])) keep--;
+
+  return {
+    data: outRows.map(r => r.out.slice(0, keep)),
+    confidence: outRows.map(r => r.conf.slice(0, keep).map(s => Math.round(s * 1000) / 1000)),
+  };
 }
 
 async function analyzeImage() {
@@ -876,16 +943,22 @@ async function analyzeImage() {
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
   try {
-    tableData = buildTable(await ocrWords(document.getElementById('preview-img')));
+    const built = buildTable(await ocrWords(document.getElementById('preview-img')));
+    tableData = built.data;
+    cellConfidence = built.confidence;
     const blurry = ocrConfidence < LOW_CONFIDENCE;
     if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容' + (blurry ? '（圖片解析度太低或太模糊）' : ''));
+    clearSmart();
     clearSelections();
     ws.style.display = 'block';
     const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
+    const lowCount = lowConfidenceCount();
+    const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心，已用橘線標示。` : '';
     renderSummary(blurry
-      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。` }
-      : { kind: 'info', text: `辨識完成 — ${size}。請點擊欄號或列號進行驗算。` });
+      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}` }
+      : { kind: 'info', text: `辨識完成 — ${size}。${lowNote}請點擊欄號或列號進行驗算。` });
     renderTable();
+    runSmartTotals();
     ws.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
@@ -902,6 +975,8 @@ function resetAll() {
   document.getElementById('file-input').value = '';
   currentFile = null;
   tableData = [];
+  cellConfidence = [];
+  clearSmart();
   clearSelections();
 }
 
@@ -909,6 +984,13 @@ function resetAll() {
    渲染
    ============================================================= */
 function maxCols() { return Math.max(...tableData.map(r => r.length), 0); }
+
+function lowConfidenceCount() {
+  let n = 0;
+  for (const row of cellConfidence)
+    for (const s of row) if (Number.isFinite(s) && s < LOW_CONFIDENCE) n++;
+  return n;
+}
 
 function renderTable() {
   const table = document.getElementById('data-table');
@@ -925,7 +1007,7 @@ function renderTable() {
   let html = '<thead><tr><th class="row-head">列＼欄</th>';
   for (let c = 0; c < cols; c++) {
     const cls = colClass(c);
-    html += `<th class="${cls}" data-col="${c}" onclick="onColClick(${c})">${c + 1}</th>`;
+    html += `<th class="${cls}" data-col="${c}" onclick="onColClick(${c}, event)">${c + 1}</th>`;
   }
   html += '</tr></thead><tbody>';
 
@@ -935,16 +1017,24 @@ function renderTable() {
     const rowOut = !inEndRow || !inStartRow;
     const rcls = rowOut ? 'row-out' : '';
     const rowHeadCls = rowClass(r);
-    html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" onclick="onRowClick(${r})">${r + 1}</td>`;
+    html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" onclick="onRowClick(${r}, event)">${r + 1}</td>`;
     for (let c = 0; c < cols; c++) {
       const v = tableData[r][c] ?? '';
       const inCol = c + 1 >= startCol && (!endColVal || c + 1 <= endColVal);
+      const conf = cellConfidence[r]?.[c];
+      const low = Number.isFinite(conf) && conf < LOW_CONFIDENCE;
       let cellCls = '';
       if (Validator.isOk(r, c)) cellCls = 'cell-ok';
       if (Validator.hasErr(r, c)) cellCls = 'cell-error';
+      if (smartMarks.has(r + ',' + c)) cellCls += ' cell-smart-ok';
+      if (low) cellCls += ' cell-low';
       if (!inCol || rowOut) cellCls += ' row-out';
-      const title = Validator.errMsg(r, c) || '';
-      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true" title="${title}" onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
+      const titles = [];
+      const errMsg = Validator.errMsg(r, c);
+      if (errMsg) titles.push(errMsg);
+      if (low) titles.push(`OCR 信心 ${Math.round(conf * 100)}%，建議核對`);
+      const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
+      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true"${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
     }
     html += '</tr>';
   }
@@ -976,16 +1066,42 @@ function rowClass(r) {
 /* =============================================================
     點選邏輯
     ============================================================= */
-function onColClick(c) {
-  cycleSelection(selectedCols, c);
+function onColClick(c, ev) {
+  clearSmart();   // 手動選取時改用驗算角色
+  if (ev && ev.shiftKey && selectedCols.length) {
+    selectRange(selectedCols, selectedCols[selectedCols.length - 1], c);
+  } else {
+    cycleSelection(selectedCols, c);
+  }
   renderTable();
   if (selectedCols.length >= 2 || selectedRows.length >= 2) validate();
 }
-function onRowClick(r) {
-  cycleSelection(selectedRows, r);
+function onRowClick(r, ev) {
+  clearSmart();
+  if (ev && ev.shiftKey && selectedRows.length) {
+    selectRange(selectedRows, selectedRows[selectedRows.length - 1], r);
+  } else {
+    cycleSelection(selectedRows, r);
+  }
   renderTable();
   if (selectedCols.length >= 2 || selectedRows.length >= 2) validate();
 }
+
+// Shift 連續選取：把 anchor 到 idx 整段加入選取（＋）；若原本的合計不在範圍內，保留它在最後
+function selectRange(arr, anchor, idx) {
+  const lo = Math.min(anchor, idx), hi = Math.max(anchor, idx);
+  const prevLast = arr[arr.length - 1];
+  const kept = arr.filter(i => i < lo || i > hi);
+  const range = [];
+  for (let i = lo; i <= hi; i++) range.push(i);
+  let next = kept.concat(range);
+  if (arr.length && !(prevLast >= lo && prevLast <= hi) && kept.includes(prevLast)) {
+    next = next.filter(i => i !== prevLast).concat([prevLast]);
+  }
+  arr.splice(0, arr.length, ...next);
+  for (let i = lo; i <= hi; i++) signs.set(i, +1);
+}
+
 function cycleSelection(arr, idx) {
   const pos = arr.indexOf(idx);
   if (pos === -1) {
@@ -1004,10 +1120,13 @@ function onCellEdit(td) {
   const newVal = td.innerText.trim();
   while (tableData[r].length <= c) tableData[r].push('');
   tableData[r][c] = newVal;
+  if (!cellConfidence[r]) cellConfidence[r] = [];
+  while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
+  cellConfidence[r][c] = 1;   // 人工確認過，不再算低信心
+  if (smartActive) { runSmartTotals(); return; }
   // 編輯後清掉舊驗算結果
   Validator.errors.clear();
-  td.classList.remove('cell-ok', 'cell-error');
-  td.title = '';
+  renderTable();
 }
 
 function clearSelections() {
@@ -1018,6 +1137,88 @@ function clearSelections() {
   document.getElementById('error-card').style.display = 'none';
   if (tableData.length) renderTable();
   renderSummary({ kind: 'info', text: '選取已重置。' });
+}
+
+/* =============================================================
+   智慧合計：自動找合計列，用幾種算法試算後比對
+   ============================================================= */
+const SMART_TOL_ABS = 2, SMART_TOL_REL = 0.00001;
+
+function fmtNum(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+
+function clearSmart() {
+  smartActive = false; smartInfo = null; smartMarks.clear();
+  const el = document.getElementById('smart-note');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+}
+
+function runSmartTotals(showEmpty = false) {
+  if (!tableData.length) return;
+  if (typeof SmartTotals === 'undefined') {
+    alert('智慧合計模組未載入，請重新整理頁面。');
+    return;
+  }
+  selectedCols = []; selectedRows = []; signs.clear();
+  Validator.errors.clear();
+  document.getElementById('error-card').style.display = 'none';
+
+  const ncols = Math.max(...tableData.map(r => r.length), 0);
+  const numericCols = [];
+  for (let c = 0; c < ncols; c++) {
+    let n = 0;
+    for (const row of tableData) if (!isNaN(Validator._num(row?.[c]))) n++;
+    if (n >= 2) numericCols.push(c);
+  }
+  const percentCols = new Set();
+  for (let c = 0; c < ncols; c++) {
+    if (tableData.some(row => /[%％]/.test(String(row?.[c] ?? '')))) percentCols.add(c);
+  }
+
+  const info = SmartTotals.evaluate(tableData, {
+    parse: v => Validator._num(v),
+    tolerance: v => Math.max(SMART_TOL_ABS, Math.abs(v) * SMART_TOL_REL),
+    numericCols, percentCols,
+  });
+  smartMarks.clear();
+  info.confirmed.forEach(hit => smartMarks.add(hit.r + ',' + hit.c));
+  smartInfo = info;
+  smartActive = info.totalRows.length > 0 || showEmpty;
+  renderTable();
+  renderSmartNote();
+}
+
+function renderSmartNote() {
+  const el = document.getElementById('smart-note');
+  if (!smartActive || !smartInfo) {
+    if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+    return;
+  }
+  const { totalRows, confirmed, unconfirmed } = smartInfo;
+  let html;
+  if (!totalRows.length) {
+    html = '🪄 沒有找到「合計/小計/總計/總額」列；請確認表格標籤，或改用欄/列手動選取。';
+  } else {
+    const checked = confirmed.length + unconfirmed.length;
+    html = `🪄 <strong>智慧合計</strong>：找到 ${totalRows.length} 個合計列，`
+      + (checked === 0
+          ? '但沒有可試算的數字（可改用欄/列手動選取）。'
+          : `已自動比對 ${confirmed.length} 格`
+            + (unconfirmed.length ? `，<strong>${unconfirmed.length} 格需人工確認</strong>` : '，全部相符')
+            + '。可直接修改數字或點欄/列手動調整。');
+    if (unconfirmed.length) {
+      const items = unconfirmed.slice(0, 6).map(x => {
+        const near = x.candidates.slice()
+          .sort((a, b) => Math.abs(a - x.actual) - Math.abs(b - x.actual))
+          .slice(0, 3);
+        return `<li>第 ${x.r + 1} 列／第 ${x.c + 1} 欄「${escapeHtml(x.label)}」：`
+          + `實際 ${fmtNum(x.actual)}，試算 ${near.map(fmtNum).join(' / ')}</li>`;
+      }).join('');
+      html += `<ul style="margin:6px 0 0 18px;line-height:1.7">${items}</ul>`;
+      if (unconfirmed.length > 6) html += `<div style="margin-top:2px">…另有 ${unconfirmed.length - 6} 格</div>`;
+    }
+  }
+  el.innerHTML = html;
+  el.style.display = 'block';
 }
 
 /* =============================================================
