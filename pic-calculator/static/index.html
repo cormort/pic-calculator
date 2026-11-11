@@ -217,6 +217,8 @@
   }
 </style>
 <link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 
 <meta name="theme-color" content="#4361ee">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -390,7 +392,7 @@ const Validator = {
     }
     return { errorCount: this.errors.size, errors: this.errors,
       errorList: Array.from(this.errors.values()),
-      totalDiff: Array.from(this.errors.values()).reduce((s, e) => s + e.diff, 0) };
+      totalDiff: Array.from(this.errors.values()).filter(e => !e.ok).reduce((s, e) => s + e.diff, 0) };
   },
 
   _vGroup({ sheetData, hRowIdx, maxRow, sColIdx, maxCol, nameColIndex,
@@ -1085,8 +1087,7 @@ function onColClick(c, ev) {
   } else {
     cycleSelection(selectedCols, c);
   }
-  renderTable();
-  if (selectedCols.length >= 2 || selectedRows.length >= 2) validate();
+  afterSelectionChange();
 }
 function onRowClick(r, ev) {
   clearSmart();
@@ -1095,8 +1096,15 @@ function onRowClick(r, ev) {
   } else {
     cycleSelection(selectedRows, r);
   }
+  afterSelectionChange();
+}
+
+// 選取不足 2 個時舊的驗算結果要一併清掉，否則色塊與錯誤清單會殘留
+function afterSelectionChange() {
+  if (selectedCols.length >= 2 || selectedRows.length >= 2) { validate(); return; }
+  Validator.errors.clear();
+  document.getElementById('error-card').style.display = 'none';
   renderTable();
-  if (selectedCols.length >= 2 || selectedRows.length >= 2) validate();
 }
 
 // Shift 連續選取：把 anchor 到 idx 整段加入選取（＋）；若原本的合計不在範圍內，保留它在最後
@@ -1130,15 +1138,16 @@ function cycleSelection(arr, idx) {
 function onCellEdit(td) {
   const r = +td.dataset.r, c = +td.dataset.c;
   const newVal = td.innerText.trim();
+  // 只點進去沒改內容：不重繪（否則下一下點擊的目標會被換掉）、不清驗算結果與低信心標示
+  if (newVal === String(tableData[r]?.[c] ?? '')) return;
   while (tableData[r].length <= c) tableData[r].push('');
   tableData[r][c] = newVal;
   if (!cellConfidence[r]) cellConfidence[r] = [];
   while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
   cellConfidence[r][c] = 1;   // 人工確認過，不再算低信心
   if (smartActive) { runSmartTotals(); return; }
-  // 編輯後清掉舊驗算結果
-  Validator.errors.clear();
-  renderTable();
+  // 編輯後依目前選取重新驗算，摘要與錯誤清單才會跟表格一致
+  afterSelectionChange();
 }
 
 function clearSelections() {
