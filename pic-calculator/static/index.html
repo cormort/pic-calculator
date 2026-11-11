@@ -171,20 +171,40 @@
   .error-list li .ei { font-size: 1.05rem; flex-shrink: 0; }
   .error-list li.ok-li { background: #eafaf1; border-left-color: var(--success); }
 
-  #file-input, #camera-input { display: none; }
 
   details { background: #f8f9fc; border-radius: 8px; padding: 8px 12px; margin-top: 8px; }
   details summary { cursor: pointer; font-size: .85rem; color: var(--muted); font-weight: 600; }
   details > .controls { margin-top: 10px; }
 
+  /* 觸控裝置：加大點擊範圍；16px 避免 iOS 聚焦時自動放大 */
+  table.data th, table.data td.row-head { touch-action: manipulation; }
+  @media (pointer: coarse) {
+    table.data { font-size: 16px; }
+    table.data th, table.data td { padding: 10px 12px; }
+    table.data th, table.data td.row-head { min-width: 48px; height: 44px; }
+    .btn { min-height: 44px; }
+    .btn-sm { min-height: 40px; padding: 8px 14px; }
+  }
   @media (max-width: 600px) {
+    header { padding: 12px 16px; }
+    header h1 { font-size: 1.05rem; }
+    .container { padding: 16px 10px; }
+    .upload-zone { padding: 24px 16px; }
+    .btn-row .btn { flex: 1 1 140px; justify-content: center; }
     .controls { gap: 8px; }
     .field input { width: 70px; }
     .field input.wide { width: 100%; }
     .field select { min-width: 100%; }
   }
 </style>
-<link rel="manifest" href="/manifest.json">
+<link rel="manifest" href="manifest.json">
+<script type="importmap">
+{ "imports": {
+  "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/ort.all.bundle.min.mjs",
+  "ppu-ocv/web": "https://cdn.jsdelivr.net/npm/ppu-ocv@3.3.0/index.web.js",
+  "ppu-ocv/canvas-web": "https://cdn.jsdelivr.net/npm/ppu-ocv@3.3.0/index.canvas-web.js"
+} }
+</script>
 <meta name="theme-color" content="#4361ee">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -541,7 +561,7 @@ async function toggleCamera() {
     return;
   }
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 2560 }, height: { ideal: 1440 } } });
     document.getElementById('video').srcObject = cameraStream;
     sec.style.display = 'block';
     document.getElementById('camera-btn').textContent = '✕ 關閉相機';
@@ -572,6 +592,83 @@ function capturePhoto() {
 /* =============================================================
    OCR
    ============================================================= */
+// PP-OCRv6 直接在瀏覽器執行 (onnxruntime-web)，不需後端；模型首次下載後由 sw.js 快取
+// ponytail: 在主執行緒跑，辨識時頁面會略頓；若嫌卡再搬進 Web Worker
+let ocrService = null;
+async function ocrWords(img) {
+  const text = document.getElementById('spinner-text');
+  if (!ocrService) {
+    text.textContent = '載入辨識模型中（首次約 6MB）…';
+    const { PaddleOcrService } = await import('https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/index.js');
+    const svc = new PaddleOcrService();
+    await svc.initialize();
+    ocrService = svc;
+  }
+  text.textContent = '辨識中，請稍候…';
+  // 手機相片動輒上千萬畫素，縮到長邊 3000 以免記憶體不足
+  const scale = Math.min(1, 3000 / Math.max(img.naturalWidth, img.naturalHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  const res = await ocrService.recognize(canvas, { flatten: true });
+  return res.results.filter(r => r.text.trim()).map(r => {
+    const { x, y, width: w, height: h } = r.box;
+    return { text: r.text.trim(), x1: x, x2: x + w, y1: y, y2: y + h, cx: x + w / 2, cy: y + h / 2, h };
+  });
+}
+
+/* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
+function buildTable(words) {
+  if (!words.length) return [];
+  const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
+
+  // 依 y 中心分列
+  const yTol = Math.max(avg(words, w => w.h) * 0.55, 6);
+  const rows = [];
+  let cur = [], lastCy = 0;
+  for (const w of [...words].sort((a, b) => a.cy - b.cy)) {
+    if (cur.length && Math.abs(w.cy - lastCy) > yTol) { rows.push(cur); cur = []; }
+    cur.push(w);
+    lastCy = avg(cur, c => c.cy);
+  }
+  rows.push(cur);
+
+  // 同列內相鄰文字框合併成 cell
+  const cellRows = rows.map(row => {
+    const gapTol = Math.max(avg(row, w => w.h) * 0.7, 8);
+    const cells = [];
+    for (const w of row.sort((a, b) => a.x1 - b.x1)) {
+      const last = cells[cells.length - 1];
+      if (last && w.x1 - last.x2 <= gapTol) { last.text += ' ' + w.text; last.x2 = Math.max(last.x2, w.x2); }
+      else cells.push({ text: w.text, x1: w.x1, x2: w.x2 });
+    }
+    cells.forEach(c => c.cx = (c.x1 + c.x2) / 2);
+    return cells;
+  });
+
+  // 跨列對齊欄位：x 中心分群成欄錨點
+  const all = cellRows.flat();
+  const widths = all.map(c => c.x2 - c.x1).sort((a, b) => a - b);
+  const colTol = Math.max((widths[widths.length >> 1] || 30) * 0.6, 20);
+  const groups = [];
+  for (const cx of all.map(c => c.cx).sort((a, b) => a - b)) {
+    const g = groups[groups.length - 1];
+    if (g && cx - g[g.length - 1] <= colTol) g.push(cx); else groups.push([cx]);
+  }
+  const centers = groups.map(g => avg(g, v => v));
+
+  return cellRows.map(row => {
+    const out = centers.map(() => '');
+    for (const c of row) {
+      let ci = 0;
+      centers.forEach((x, i) => { if (Math.abs(x - c.cx) < Math.abs(centers[ci] - c.cx)) ci = i; });
+      out[ci] = out[ci] ? out[ci] + ' ' + c.text : c.text;
+    }
+    return out;
+  });
+}
+
 async function analyzeImage() {
   if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
   const spinner = document.getElementById('spinner');
@@ -580,12 +677,8 @@ async function analyzeImage() {
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
   try {
-    const form = new FormData();
-    form.append('file', currentFile);
-    const resp = await fetch('/analyze', { method: 'POST', body: form });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || '伺服器錯誤');
-    tableData = data.table;
+    tableData = buildTable(await ocrWords(document.getElementById('preview-img')));
+    if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容');
     clearSelections();
     ws.style.display = 'block';
     renderSummary({ kind: 'info', text: `辨識完成 — 共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄。請點擊欄號或列號進行驗算。` });
@@ -786,7 +879,7 @@ function renderSummary({ kind, text }) {
 
 // Register service worker for PWA
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(err => {
+  navigator.serviceWorker.register('sw.js').catch(err => {
     console.log('SW registration failed:', err);
   });
 }
