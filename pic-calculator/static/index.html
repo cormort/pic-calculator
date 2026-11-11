@@ -687,6 +687,9 @@ function capturePhoto() {
 // PP-OCRv6 直接在瀏覽器執行 (onnxruntime-web)，不需後端；模型首次下載後由 sw.js 快取
 // ponytail: 在主執行緒跑，辨識時頁面會略頓；若嫌卡再搬進 Web Worker
 let ocrService = null, toTraditional = null;
+// 平均辨識信心值。實測清楚的圖 ≥ 0.96，解析度不足或模糊的圖 ≤ 0.75，取 0.85 為界
+let ocrConfidence = 1;
+const LOW_CONFIDENCE = 0.85, MIN_CONFIDENCE = 0.5;
 async function ocrWords(img) {
   const text = document.getElementById('spinner-text');
   if (!ocrService) {
@@ -717,8 +720,10 @@ async function ocrWords(img) {
   const id = g.getImageData(0, 0, canvas.width, canvas.height), d = id.data;
   for (let i = 0; i < d.length; i += 4) d[i] = d[i + 1] = d[i + 2] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
   g.putImageData(id, 0, 0);
-  const res = await ocrService.recognize(canvas, { flatten: true });
-  return res.results.filter(r => r.text.trim()).map(r => {
+  // 先拿全部結果算平均信心值（判斷圖片品質），再自行濾掉低信心的雜訊
+  const res = await ocrService.recognize(canvas, { flatten: true, minimumConfidence: 0 });
+  ocrConfidence = res.results.length ? res.results.reduce((a, r) => a + r.confidence, 0) / res.results.length : 1;
+  return res.results.filter(r => r.confidence >= MIN_CONFIDENCE && r.text.trim()).map(r => {
     const { x, y, width: w, height: h } = r.box;
     return { text: cleanText(r.text), x1: x, x2: x + w, y1: y, y2: y + h, cx: x + w / 2, cy: y + h / 2, h };
   });
@@ -788,10 +793,14 @@ async function analyzeImage() {
   document.getElementById('analyze-btn').disabled = true;
   try {
     tableData = buildTable(await ocrWords(document.getElementById('preview-img')));
-    if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容');
+    const blurry = ocrConfidence < LOW_CONFIDENCE;
+    if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容' + (blurry ? '（圖片解析度太低或太模糊）' : ''));
     clearSelections();
     ws.style.display = 'block';
-    renderSummary({ kind: 'info', text: `辨識完成 — 共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄。請點擊欄號或列號進行驗算。` });
+    const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
+    renderSummary(blurry
+      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。` }
+      : { kind: 'info', text: `辨識完成 — ${size}。請點擊欄號或列號進行驗算。` });
     renderTable();
     ws.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
