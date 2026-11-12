@@ -53,6 +53,22 @@ const CASES = [
     smart: /相符/,
   },
   {
+    name: "沒有合計標籤（最大值當合計）",
+    text: "科目\t金額\nA\t1,000\nB\t1,500\nC\t2,500\n扣減\t-300",
+    shape: [5, 2],
+    first: ["科目", "金額"],
+    cell: [3, 1, "2,500"],   // 第 4 列（索引 3）＝ C 2,500
+    smart: /最大值那一列/,   // 最後一列是負值扣減，不能誤抓
+  },
+  {
+    name: "損益表（賸餘標籤）",
+    text: "科目\t金額\n營業收入\t500,000\n營業成本\t-200,000\n本期賸餘\t300,000",
+    shape: [4, 2],
+    first: ["科目", "金額"],
+    cell: [3, 1, "300,000"],
+    smart: /相符/,
+  },
+  {
     name: "單欄金額（沒有合計列）",
     text: "12,000\n3,500\n8,250",
     shape: [3, 1],
@@ -124,7 +140,7 @@ const CASES = [
     console.log("\n失敗：\n" + fails.map((f) => "  - " + f).join("\n"));
     process.exit(1);
   }
-  console.log("\n全部通過：四種分隔格式＋單欄金額＋UI 路徑。");
+  console.log("\n全部通過：四種分隔格式＋合計列判斷（最大值／賸餘）＋單欄金額＋UI 路徑。");
 })().catch((err) => {
   console.error(err);
   process.exit(1);
