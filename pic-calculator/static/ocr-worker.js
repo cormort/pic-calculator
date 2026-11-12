@@ -279,6 +279,132 @@ function detectLines(gray, W, H, vertical) {
 }
 
 /* =============================================================
+   跨格線的文字框：切開後各自重新辨識
+   ============================================================= */
+// 實拍常見：項次「1-1」右對齊、緊貼左對齊的科目「主持人費」，偵測器把整串框成
+// 一個字（「1-1主持人費」）。這種框之後不管怎麼切欄都只會落在一欄，整張表從
+// 這裡開始左右錯位。直接拿原圖沿格線切兩半各自辨識，比按字數硬切準得多。
+function cropCanvas(canvas, x1, y1, x2, y2, scale = 2) {
+  const sx = Math.max(0, Math.floor(x1)), sy = Math.max(0, Math.floor(y1));
+  const sw = Math.max(1, Math.ceil(Math.min(canvas.width, x2) - sx));
+  const sh = Math.max(1, Math.ceil(Math.min(canvas.height, y2) - sy));
+  const c = new OffscreenCanvas(Math.max(1, Math.round(sw * scale)), Math.max(1, Math.round(sh * scale)));
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(canvas, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+
+async function recCrop(svc, canvas, x1, y1, x2, y2) {
+  let best = null;
+  for (const scale of [2, 1]) {
+    const res = await svc.recognize(cropCanvas(canvas, x1, y1, x2, y2, scale), {
+      flatten: true, minimumConfidence: 0, strategy: 'per-box',
+    });
+    const hits = res.results.filter((r) => r.text.trim()).sort((a, b) => b.confidence - a.confidence);
+    best = hits[0] || best;
+    if (best && best.confidence >= 0.85) break;   // 夠準就不必再試原尺寸
+  }
+  return best;
+}
+
+const CJK_G = /[\u4e00-\u9fff]/;
+
+// 依「字寬」估算格線落在哪兩個字之間（中文 1、英數 0.55、標點 0.4）
+function charUnits(ch) {
+  if (/[\u2e80-\u9fff\uff01-\uff60]/.test(ch)) return 1;
+  if (/[0-9a-zA-Z]/.test(ch)) return 0.55;
+  if (/\s/.test(ch)) return 0.3;
+  return 0.4;
+}
+
+function geometricSplit(text, frac) {
+  const total = [...text].reduce((n, ch) => n + charUnits(ch), 0);
+  const target = frac * total;
+  let acc = 0, idx = 0;
+  for (let i = 0; i < text.length; i++) {
+    const w = charUnits(text[i]);
+    if (acc + w / 2 > target) { idx = i; break; }
+    acc += w;
+    idx = i + 1;
+  }
+  if (idx <= 0 || idx >= text.length) return null;
+  return [text.slice(0, idx), text.slice(idx)];
+}
+
+async function splitStraddling(canvas, results, grid, svc) {
+  const vLines = grid?.v || [];
+  if (!vLines.length) return results;
+  const squash = (t) => String(t || '').replace(/\s+/g, '');
+  // 「1,234」「(500)」這種整格就是數字的不拆 —— 拆開會變成兩格假數字，整欄驗算就毀了
+  const isNumeric = (t) => {
+    const s = squash(t).replace(/[,，$%％()（）\-−－]/g, '');
+    return s !== '' && /^[\d.]+$/.test(s) && !isNaN(Number(s));
+  };
+  const out = [];
+  let budget = 24;   // 每次辨識最多補 24 次，避免大表格把時間吃掉
+  for (const r of results) {
+    const cy = r.box.y + r.box.height / 2;
+    const cuts = vLines
+      .map((l) => l.a + l.b * cy)
+      .filter((x) => {
+        const f = (x - r.box.x) / Math.max(1, r.box.width);
+        return f > 0.12 && f < 0.88;
+      });
+    // 表格上方的標題（例如「113年度…明細表」）不在表格裡，橫線以上不要拆
+    const tableTop = grid?.h?.length ? Math.min(...grid.h.map((l) => l.a + l.b * (r.box.x + r.box.width / 2))) : -Infinity;
+    if (cy < tableTop) { out.push(r); continue; }
+    if (!cuts.length || r.text.trim().length < 2 || isNumeric(r.text) || budget <= 0) { out.push(r); continue; }
+
+    const x = cuts[0];
+    // 先用字寬比例快速切一次：像「1-1主 → 1-1 ／ 主」這種看得出來的，
+    // 就不必再花時間跑兩次辨識（乾淨掃描件大多是這種）
+    const frac = (x - r.box.x) / Math.max(1, r.box.width);
+    const cheap = geometricSplit(r.text, frac);
+    if (cheap && /^[\dA-Za-z\-.,()\/]+$/.test(cheap[0]) && cheap[0].length <= 6) {
+      out.push({ ...r, text: cheap[0], box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: cheap[1], box: { ...r.box, x, width: r.box.x + r.box.width - x } });
+      continue;
+    }
+    const pad = r.box.height * 0.25;
+    const y1 = r.box.y - pad, y2 = r.box.y + r.box.height + pad;
+    // 用格線（而不是偵測框的邊）決定裁切範圍：偵測框的 padding 會把隔壁的字含進來，
+    // 單邊裁切就會多認出一個字（「1」被讀成「1人」）
+    const sorted = vLines.map((l) => l.a + l.b * cy).sort((m, n) => m - n);
+    const leftEdge = Math.max(r.box.x - 2, ...[...sorted].filter((v) => v < x - 2).slice(-1));
+    const rightEdge = Math.min(r.box.x + r.box.width + 2, ...[...sorted].filter((v) => v > x + 2).slice(0, 1));
+    const rightBound = Number.isFinite(rightEdge) ? rightEdge : r.box.x + r.box.width + 2;
+    budget -= 2;
+    // 同一時間只跑一次 recognize：服務內部共用同一個 session，平行呼叫會拿到空結果
+    let left = null, right = null;
+    try {
+      left = await recCrop(svc, canvas, leftEdge, y1, x - 2, y2);
+      right = await recCrop(svc, canvas, x + 2, y1, rightBound, y2);
+    } catch (err) { /* 補救只是加分，失敗就保留原框 */ }
+
+    // 單一個字的裁切常常辨識不出來（「主」「業」）：只要一邊認得、又是原字串的
+    // 開頭/結尾，另一邊就用剩下的字補齊。兩邊拼不回來原字串就整筆放棄。
+    const whole = squash(r.text);
+    let L = left?.text ? squash(left.text) : null;
+    let R = right?.text ? squash(right.text) : null;
+    if (L && !R && whole.startsWith(L)) R = whole.slice(L.length) || null;
+    else if (!L && R && whole.endsWith(R)) L = whole.slice(0, whole.length - R.length) || null;
+    if (!L || !R || L + R !== whole) { out.push(r); continue; }
+    // 拆出單一個中文字、右邊又接著中文：這是同一個詞被雜線切開（陰影、紙緣），不是兩格
+    if (L.length === 1 && CJK_G.test(L) && CJK_G.test(R[0])) { out.push(r); continue; }
+
+    out.push(
+      { ...r, text: left?.text || L, confidence: left?.confidence ?? r.confidence,
+        box: { ...r.box, width: x - r.box.x } },
+      { ...r, text: right?.text || R, confidence: right?.confidence ?? r.confidence,
+        box: { ...r.box, x, width: r.box.x + r.box.width - x } },
+    );
+  }
+  return out;
+}
+
+/* =============================================================
    訊息處理
    ============================================================= */
 self.onmessage = async (event) => {
@@ -315,10 +441,13 @@ self.onmessage = async (event) => {
       minimumConfidence: 0,
       strategy: 'per-box',
     });
-    const confidence = res.results.length
-      ? res.results.reduce((a, r) => a + r.confidence, 0) / res.results.length
+    // 跨格線的字框先切開重辨識，後面的切欄才不會從這裡歪掉
+    let words = res.results;
+    try { words = await splitStraddling(canvas, res.results, grid, svc); } catch (err) { /* 補救失敗就用原結果 */ }
+    const confidence = words.length
+      ? words.reduce((a, r) => a + r.confidence, 0) / words.length
       : 1;
-    const results = res.results
+    const results = words
       .filter((r) => r.confidence >= MIN_CONFIDENCE && r.text.trim())
       .map((r) => {
         const { x, y, width: w, height: h } = r.box;
@@ -329,7 +458,8 @@ self.onmessage = async (event) => {
           score: r.confidence,
         };
       });
-    self.postMessage({ type: 'result', id, confidence, results, grid, backend: { ocr: serviceBackend, layout: layoutBackend() } });
+    self.postMessage({ type: 'result', id, confidence, results, grid,
+      backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });
   }
