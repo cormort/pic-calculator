@@ -13,7 +13,7 @@ const buildSrc = html.match(/function buildTable\(words, grid\) \{[\s\S]*?\n\}\n
 // 欄／列的驗算角色（加項／減項／合計）是純邏輯，直接抽出來測
 const selSrc = [
   html.match(/const sel = \{[\s\S]*?let selMode = 1;/)[0],
-  ...["setRole", "removeSel", "addRange", "selCount", "selIndices", "selSigns"]
+  ...["autoTotalIndex", "setRole", "removeSel", "addRange", "selCount", "selIndices", "selSigns"]
     .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0]),
 ].join("\n");
 
@@ -149,8 +149,8 @@ assert.deepStrictEqual(emptyCol.data[1], ["租金", "12,000"]);
 
 // 欄／列角色：加項、減項、合計（先選角色再點欄號）
 // 用 Function 包一層，避免 eval 的 function 宣告蓋到測試自己的名字
-const selCtx = new Function(selSrc + "\n; return { sel, setRole, removeSel, addRange, selCount, selIndices, selSigns };")();
-const { sel, setRole, removeSel, addRange, selCount, selIndices, selSigns } = selCtx;
+const selCtx = new Function(selSrc + "\n; return { sel, autoTotalIndex, setRole, removeSel, addRange, selCount, selIndices, selSigns };")();
+const { sel, autoTotalIndex, setRole, removeSel, addRange, selCount, selIndices, selSigns } = selCtx;
 const resetSel = () => { sel.col = { plus: [], minus: [], total: null }; sel.row = { plus: [], minus: [], total: null }; };
 resetSel();
 setRole("col", 0, 1);            // 第1欄 加項
@@ -172,10 +172,24 @@ assert.deepStrictEqual([...selSigns("col").entries()], [[0, -1]]);
 setRole("col", 0, 0);
 assert.deepStrictEqual(selIndices("col"), [0]);
 
-// 沒指定合計時，沿用最後一個加項當合計（與舊行為一致）
+// 沒指定合計時，最後點的那一個自動當合計，而且不能再出現在加項裡。
+// （舊版回 [2,3,3]：同一欄既當加項又當合計 → 期望值把自己加進去，永遠驗不過）
 resetSel();
 setRole("col", 2, 1); setRole("col", 3, 1);
-assert.deepStrictEqual(selIndices("col"), [2, 3, 3]);
+assert.strictEqual(autoTotalIndex("col"), 3);
+assert.deepStrictEqual(selIndices("col"), [2, 3]);
+assert.deepStrictEqual([...selSigns("col").entries()], [[2, 1], [3, 1]]);
+
+// 明確指定合計後，就以指定的為準（自動合計讓位）
+setRole("col", 2, 0);
+assert.strictEqual(autoTotalIndex("col"), null);
+assert.deepStrictEqual(selIndices("col"), [3, 2]);
+
+// 只選一欄：沒有「等於」，不該亂猜
+resetSel();
+setRole("col", 5, 1);
+assert.strictEqual(autoTotalIndex("col"), null);
+assert.deepStrictEqual(selIndices("col"), [5]);
 
 // Shift 連續選取：錨點到目標整段設成加項，合計保留在最後
 resetSel();

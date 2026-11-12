@@ -1747,9 +1747,9 @@ function setSelMode(role) {
     b.classList.toggle('on', +b.dataset.role === role);
   });
   const hint = document.getElementById('sel-mode-hint');
-  if (hint) hint.textContent = role === 1 ? '點欄號／列號 → 加入「加項」'
-    : role === -1 ? '點欄號／列號 → 設為「減項」'
-    : '點欄號／列號 → 設為「合計」（一個就好）';
+  if (hint) hint.textContent = role === 1 ? '點欄號／列號 → 加項（最後點的那一個自動當「等於」）'
+    : role === -1 ? '點欄號／列號 → 減項'
+    : '點欄號／列號 → 指定「等於」（合計不在最後時才需要點）';
 }
 
 function setRole(kind, idx, role) {
@@ -1787,12 +1787,23 @@ function selCount(kind) {
   const k = sel[kind];
   return k.plus.length + k.minus.length + (k.total !== null ? 1 : 0);
 }
+/* 預設手勢就是「一直點欄號都是加項，最後點的那一個是等於」：
+ * 不必先回托盤把角色切成「＝」。只有合計欄不在最後（例如合計在中間）
+ * 才需要明確指定，指定後就以指定的為準。 */
+function autoTotalIndex(kind) {
+  const k = sel[kind];
+  if (k.total !== null) return null;                  // 已明確指定
+  const ordered = [...k.plus, ...k.minus];
+  return ordered.length >= 2 ? ordered[ordered.length - 1] : null;
+}
+
 // 給 Validator 用：加項在前、合計在最後；沒有指定合計時沿用最後選的那一個
 function selIndices(kind) {
   const k = sel[kind];
-  const idx = [...k.plus, ...k.minus];
+  const auto = autoTotalIndex(kind);
+  const idx = [...k.plus, ...k.minus].filter(i => i !== auto);
   if (k.total !== null) idx.push(k.total);
-  else if (idx.length) idx.push(idx[idx.length - 1]);
+  else if (auto !== null) idx.push(auto);
   return idx;
 }
 function selSigns(kind) {
@@ -1873,20 +1884,24 @@ function renderSelectionTray() {
   if (!box) return;
   const chips = [];
   const name = { col: '欄', row: '列' };
-  const push = (kind, idx, role) => {
+  const push = (kind, idx, role, autoTotal) => {
     const label = role === 0 ? '＝' : role === 1 ? '＋' : '−';
     const cls = role === 0 ? 'target' : role === 1 ? 'plus' : 'minus';
+    const tip = autoTotal ? '最後點的那一個自動當「等於」；點一下取消這一欄／列' : '點一下取消';
     chips.push(`<button class="chip ${cls}" onclick="removeSel('${kind}',${idx}); afterSelectionChange()" `
-      + `title="點一下取消">${name[kind]}${idx + 1} ${label}</button>`);
+      + `title="${tip}">${name[kind]}${idx + 1} ${label}</button>`);
   };
+  let anyAuto = false;
   for (const kind of ['col', 'row']) {
     const k = sel[kind];
-    k.plus.forEach(i => push(kind, i, 1));
-    k.minus.forEach(i => push(kind, i, -1));
-    if (k.total !== null) push(kind, k.total, 0);
+    const auto = autoTotalIndex(kind);
+    k.plus.filter(i => i !== auto).forEach(i => push(kind, i, 1));
+    k.minus.filter(i => i !== auto).forEach(i => push(kind, i, -1));
+    if (auto !== null) { push(kind, auto, 0, true); anyAuto = true; }
+    else if (k.total !== null) push(kind, k.total, 0, false);
   }
-  const auto = (['col', 'row'].some(kind => sel[kind].total === null && selCount(kind) >= 2))
-    ? '<span class="chip-note">還沒指定合計 → 暫用最後選的那一欄／列</span>' : '';
+  const auto = anyAuto
+    ? '<span class="chip-note">最後點的那一個自動當「等於」；合計不在最後時才需要點托盤的「＝」</span>' : '';
   box.innerHTML = chips.length ? chips.join('') + auto : '<span class="chip-note">尚未選取：點欄號或列號開始</span>';
 }
 
