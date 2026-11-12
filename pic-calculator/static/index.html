@@ -351,6 +351,25 @@
   <div class="btn-row">
     <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案</button>
     <button class="btn btn-outline" id="camera-btn" onclick="toggleCamera()">📷 拍照</button>
+    <button class="btn btn-ghost" id="paste-btn" onclick="togglePastePanel()">📋 貼上文字／表格</button>
+  </div>
+
+  <div id="paste-panel" class="card" style="display:none; margin-top:12px;">
+    <div class="card-body">
+      <p class="hint" style="margin-bottom:10px;">
+        直接從 Excel／Google 試算表複製整塊貼上，或貼上一行一筆的「項目 金額」。
+        支援 <strong>Tab</strong>（試算表預設）、<strong>逗號 CSV</strong>、<strong>連續空白</strong>（Word／PDF 複製）三種分隔。
+        這裡不做辨識，貼什麼就是什麼。
+      </p>
+      <textarea id="paste-input" rows="8" spellcheck="false"
+        style="width:100%; font-family: ui-monospace, SFMono-Regular, monospace; font-size:.88rem;
+               padding:10px; border:1px solid var(--border); border-radius:8px; line-height:1.5;"
+        placeholder="項次&#9;科目&#9;金額&#10;1&#9;人事費&#9;548,000&#10;2&#9;業務費&#9;361,731&#10;合計&#9;&#9;909,731"></textarea>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn" onclick="applyPastedText()">📊 解析並驗算</button>
+        <button class="btn btn-ghost btn-sm" onclick="togglePastePanel(false)">取消</button>
+      </div>
+    </div>
   </div>
 
   <div id="camera-section">
@@ -1250,7 +1269,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v36';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v38';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2765,6 +2784,108 @@ function renderSummary({ kind, text }) {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => { if (tableData.length) renderTable(); });
 });
+
+/* =============================================================
+   貼上文字／表格 → 表格
+   ============================================================= */
+function togglePastePanel(show) {
+  const panel = document.getElementById('paste-panel');
+  if (!panel) return;
+  const next = show === undefined ? panel.style.display !== 'block' : !!show;
+  panel.style.display = next ? 'block' : 'none';
+  if (next) document.getElementById('paste-input').focus();
+}
+
+// 一行 CSV：支援雙引號包住含逗號的欄位（Excel 匯出的常見格式）
+function parseCsvLine(line) {
+  const out = [];
+  let cur = '', quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cur += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',' || ch === '，') { out.push(cur.trim()); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// 「人事費 548,000」「租金：12,000 元」→ [名稱, 金額]；認不出來就整行當一格
+function splitLabelAmount(line) {
+  const t = line.trim();
+  const m = t.match(/^(.*?)[\s:：]+((?:NT\$|\$)?\s*-?[\d,]+(?:\.\d+)?\s*(?:元|%|％)?)$/);
+  if (m && m[1].trim()) return [m[1].trim(), m[2].replace(/\s+/g, '')];
+  return [t];
+}
+
+function parsePastedTable(text) {
+  const raw = String(text || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
+  const lines = raw.split('\n').filter(l => l.trim() !== '');
+  if (!lines.length) return [];
+
+  const tabs = lines.filter(l => l.includes('\t')).length;
+  let grid;
+  if (tabs >= Math.ceil(lines.length * 0.6)) {
+    grid = lines.map(l => l.split('\t').map(c => c.trim()));
+  } else if (lines.filter(l => {
+    // 逗號如果只是千分位（12,000）就不是 CSV 分隔符
+    const digitCommas = (l.match(/(?<=\d)[,，](?=\d{3}(\D|$))/g) || []).length;
+    const commas = (l.match(/[,，]/g) || []).length;
+    return commas > digitCommas && parseCsvLine(l).length >= 2;
+  }).length >= Math.ceil(lines.length * 0.8)) {
+    grid = lines.map(parseCsvLine);
+  } else if (lines.filter(l => /\S\s{2,}\S|\u3000\u3000/.test(l)).length >= Math.ceil(lines.length * 0.6)) {
+    // 連續空白／全形空白對齊（從 Word、PDF 複製常見）：保留空欄，不要 filter
+    grid = lines.map(l => l.split(/\s{2,}|\u3000+/).map(c => c.trim()));
+  } else {
+    grid = lines.map(splitLabelAmount);
+  }
+
+  // 統一字數：短列補空、長列截掉全空的尾欄
+  const ncol = Math.max(...grid.map(r => r.length));
+  for (const r of grid) while (r.length < ncol) r.push('');
+  let keep = ncol;
+  while (keep > 1 && grid.every(r => !r[keep - 1])) keep--;
+  return grid.map(r => r.slice(0, keep));
+}
+
+// 把一份二維陣列接上既有的驗算流程（不經 OCR）
+function applyTable(grid, opts = {}) {
+  if (!grid || !grid.length) return false;
+  const repaired = repairNumericCells(grid.map(r => r.slice()), null);
+  const stripped = stripGarbageText(repaired.data, headerRowCount());
+  rememberTemplate();
+  tableData = stripped.data;
+  cellConfidence = tableData.map(r => r.map(() => 1));
+  cellBoxes = [];
+  cellSpans = [];
+  cellRepairs = new Map([...repaired.repairs, ...stripped.repairs].map(x => [x.r + ',' + x.c, x]));
+  manualTotalRows.clear();
+  clearSmart();
+  clearSelections();
+  document.getElementById('workspace').style.display = 'block';
+  const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
+  const fixNote = cellRepairs.size ? `　🔧 ${cellRepairs.size} 格已自動整理（虛線標示）。` : '';
+  const source = opts.source === 'paste' ? '📋 貼上的文字（未經辨識，內容就是原文）' : (opts.source || '');
+  renderSummary({ kind: 'info', text: `讀取完成 — ${size}。${source ? '　' + source + '。' : ''}${fixNote}請點擊欄號或列號進行驗算。` });
+  renderTable();
+  renderReviewButton();
+  runSmartTotals(true);
+  return true;
+}
+
+function applyPastedText() {
+  const el = document.getElementById('paste-input');
+  const grid = parsePastedTable(el ? el.value : '');
+  if (!grid.length) { alert('貼上的內容裡沒有可解析的列，請確認有貼到文字。'); return; }
+  if (!applyTable(grid, { source: 'paste' })) { alert('解析失敗，請確認格式。'); return; }
+  togglePastePanel(false);
+  document.getElementById('workspace').scrollIntoView({ block: 'start' });
+}
 
 /* =============================================================
    低信心核對、鍵盤移動、複製表格
