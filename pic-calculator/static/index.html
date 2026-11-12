@@ -274,7 +274,19 @@
     .btn { min-height: 44px; }
     .btn-sm { min-height: 40px; padding: 8px 14px; }
   }
+  /* 辨識完成後收起原圖與框選：手機上它佔掉將近一個螢幕，結果被推到下面 */
+  #preview-toggle { display: none; width: 100%; justify-content: space-between; }
+  #preview-wrap.collapsed > :not(#preview-toggle) { display: none; }
+  #preview-wrap.collapsed > #preview-toggle { display: flex; }
+  #preview-wrap.collapsed { margin-top: 12px; }
+  details.fold { margin-top: 8px; }
+  details.fold > summary { padding: 6px 0; }
+  details.fold > .hint, details.fold > .range-row { margin-top: 6px; }
   @media (max-width: 600px) {
+    /* 手機不能拖曳，點下方「選擇檔案」功能相同 */
+    .upload-zone { display: none; }
+    #preview-wrap { margin-top: 12px; }
+    .legend { padding: 6px 12px 0; gap: 8px; }
     header { padding: 12px 16px; }
     header h1 { font-size: 1.05rem; }
     .container { padding: 16px 10px; }
@@ -348,6 +360,9 @@
   </div>
 
   <div id="preview-wrap">
+    <button class="btn btn-outline btn-sm" id="preview-toggle" onclick="setPreviewCollapsed(false)">
+      <span>🖼️ 原圖、框選範圍、辨識精度</span><span>展開 ▾</span>
+    </button>
     <div id="crop-wrap">
       <img id="preview-img" src="" alt="預覽" draggable="false">
       <svg id="crop-svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="crop-shade"/><polygon id="crop-poly"/></svg>
@@ -400,6 +415,7 @@
         </div>
       </div>
       <div class="card-body">
+        <details class="fold" id="help-fold"><summary>📖 操作說明</summary>
         <div class="hint">
           👉 <strong>先在表格正上方的托盤選角色</strong>，再點 <strong>欄號</strong>（表格上方）或 <strong>列號</strong>（左側）套用：<br>
           <span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → <span style="color:var(--target);font-weight:700">＝</span> 合計（每個方向一個）。
@@ -408,6 +424,8 @@
           <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。<br>
           <strong>連續處理同格式表格</strong>：下一張會自動沿用這一張的欄／列設定（欄數、表頭相同才套用）。
         </div>
+        </details>
+        <details class="fold" id="advanced-fold"><summary>⚙️ 進階：驗算範圍、方向、低信心門檻</summary>
         <div class="range-row">
           <label>表頭列 <input id="headerRow" type="number" min="1" value="1"></label>
           <label>起始欄 <input id="startCol" type="number" min="1" value="1"></label>
@@ -430,6 +448,7 @@
             </select>
           </label>
         </div>
+        </details>
       </div>
     </div>
 
@@ -914,6 +933,7 @@ function loadFile(file, opts = {}) {
     };
     img.src = ev.target.result;
     document.getElementById('preview-wrap').style.display = 'block';
+    setPreviewCollapsed(false);
     document.getElementById('workspace').style.display = 'none';
   };
   reader.readAsDataURL(file);
@@ -1574,6 +1594,11 @@ function buildTable(words, grid) {
   };
 }
 
+// 辨識完成後收起原圖與框選（要重新框選或換精度時再展開）
+function setPreviewCollapsed(collapsed) {
+  document.getElementById('preview-wrap').classList.toggle('collapsed', collapsed);
+}
+
 async function analyzeImage() {
   if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
   if (analyzing) return;
@@ -1624,6 +1649,7 @@ async function analyzeImage() {
     renderReviewButton();
     runSmartTotals(true);
     applyTemplate();
+    setPreviewCollapsed(true);
   } catch (err) {
     document.getElementById('template-note').style.display = 'none';
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
@@ -2702,6 +2728,11 @@ if (autoAnalyzeEl) {
     autoAnalyze = autoAnalyzeEl.checked;
     try { localStorage.setItem('pcAutoAnalyze', autoAnalyze ? '1' : '0'); } catch (err) { /* 忽略 */ }
   });
+}
+
+// 寬螢幕放得下，說明與進階設定預設展開；手機預設收起，結果才不會被推到很下面
+if (matchMedia('(min-width: 601px)').matches) {
+  document.querySelectorAll('details.fold').forEach(d => { d.open = true; });
 }
 
 // 選取托盤初始狀態
