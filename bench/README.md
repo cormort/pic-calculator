@@ -70,6 +70,10 @@ Linux／CI 轉檔：`.github/workflows/slanet-convert.yml`（手動觸發，兩�
 curl -fsSL https://raw.githubusercontent.com/cormort/pic-calculator/main/bench/experiments/cloud_convert.sh | bash
 ```
 
+只有一台乾淨的主機、不想 clone repo 時，用**單檔版**
+[`slanet_convert_standalone.sh`](experiments/slanet_convert_standalone.sh)
+（bash 開頭＋內嵌轉檔程式，直接 `bash slanet_convert_standalone.sh` 即可）。
+
 腳本會依序試 `paddle 2.6.2 + paddle2onnx 1.0.6 / 1.0.9`、`paddle 3.3.1 + paddle2onnx 2.1.0`，
 每組都跑完整驗收（3×4→15 格、4×4→20 格、不含 Loop），第一組通過就停並印出檔案路徑與 sha256。
 
