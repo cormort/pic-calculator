@@ -14,21 +14,31 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # 版本是照 PyPI 上「真的有 wheel」的組合挑的（2026-11-12 查）：
+      #   paddle2onnx 1.0.6／1.0.9 沒有 cp311 wheel（1.0.6 只到 cp310）→ 在 py3.11 必然安裝失敗
+      #   paddle2onnx 1.0.8 有 cp311 manylinux_x86_64 → 這是「1.0.x 轉得乾淨」那條路
+      #   paddle2onnx 2.1.0 支援到 cp312，但 macOS 實測轉出來含 Loop（對照組）
       matrix:
         include:
           - paddle: "2.6.2"
-            p2o: "1.0.6"
-            label: paddle2onnx-1.0
-          - paddle: "3.3.1"
+            p2o: "1.0.8"
+            py: "3.11"
+            label: paddle2onnx-1.0.8
+          - paddle: "2.6.2"
+            p2o: "1.0.5"
+            py: "3.11"
+            label: paddle2onnx-1.0.5
+          - paddle: "3.0.0"
             p2o: "2.1.0"
-            label: paddle2onnx-2.1
+            py: "3.12"
+            label: paddle2onnx-2.1.0
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.py }}
 
       - name: 安裝 ${{ matrix.label }}
         run: |

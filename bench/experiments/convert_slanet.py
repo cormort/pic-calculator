@@ -171,10 +171,12 @@ def main() -> int:
         print(f"{'PASS' if passed else 'FAIL'}  {cols}×{rows} 合成表：解出 {len(cells)} 格（期望 {expect}）")
 
     safe, note = check_web_safe(args.out)
-    print(f"{'PASS' if safe else 'WARN'}  {note}")
+    print(f"{'PASS' if safe else 'FAIL'}  {note}")
     print("\n結論：", "可以接進 App（先放進 static/models/ 再開 worker 的結構模式）" if (ok and safe)
           else "還不能接：先照 README/bench 說明的下一步處理")
-    return 0 if ok else 1
+    # 三關都要過才算過：含 Loop/If/Scan 的圖 onnxruntime-web 載不進去，
+    # 上傳 artifact 就等於把一個「跑不起來」的模型當成成果（原本只印 WARN，CI 照樣綠）
+    return 0 if (ok and safe) else 1
 
 
 if __name__ == "__main__":
