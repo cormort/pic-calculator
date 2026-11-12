@@ -11,9 +11,12 @@
   .venv-paddle/bin/python bench/experiments/convert_slanet.py --out /tmp/slanet_plus.onnx
 
 驗收門檻（沒過就不該接進 App）：
-  1. 3×4 粗線合成表 → 解出 15 格
-  2. 4×4 方形合成表 → 解出 20 格
-  3. 轉出來的圖不含 Loop／If／Scan（否則 onnxruntime-web 很可能載不進去）
+  1. 轉出來的 ONNX 能被 onnxruntime 載入（桌機版；web 版在瀏覽器另外驗）
+  2. 3×4 粗線合成表 → 解出 15 格
+  3. 4×4 方形合成表 → 解出 20 格
+
+Loop／If／Scan 只回報不判死：實測 1.0.8 的圖含一個解碼器 Loop，但 onnxruntime-web
+1.31.1 照樣載得進來、310 ms 跑完（見 bench/experiments/SLANET_FINDINGS.md）。
 
 退出碼：0 全部通過、1 有項目沒過。
 """
@@ -170,13 +173,17 @@ def main() -> int:
         ok = ok and passed
         print(f"{'PASS' if passed else 'FAIL'}  {cols}×{rows} 合成表：解出 {len(cells)} 格（期望 {expect}）")
 
-    safe, note = check_web_safe(args.out)
-    print(f"{'PASS' if safe else 'FAIL'}  {note}")
-    print("\n結論：", "可以接進 App（先放進 static/models/ 再開 worker 的結構模式）" if (ok and safe)
-          else "還不能接：先照 README/bench 說明的下一步處理")
-    # 三關都要過才算過：含 Loop/If/Scan 的圖 onnxruntime-web 載不進去，
-    # 上傳 artifact 就等於把一個「跑不起來」的模型當成成果（原本只印 WARN，CI 照樣綠）
-    return 0 if (ok and safe) else 1
+    # Loop 只回報、不判死。實測（bench/experiments/SLANET_FINDINGS.md）：
+    # 1.0.8 轉出來的圖含一個 Loop（解碼器的自回歸循環），但 onnxruntime-web 1.31.1
+    # 照樣載得進來、310 ms 跑完、解出 15／20 格；真正讓 web 拒絕的是 2.1.0 那個
+    # 無效的 Concat.27（連桌機版都載不進去，上面那關就會先失敗）。
+    _, note = check_web_safe(args.out)
+    print(f"INFO  {note}（Loop 不影響 web，實測見 SLANET_FINDINGS.md）")
+    print("\n結論：", "可以接進 App（放進 static/models/ 再開 worker 的結構模式）" if ok
+          else "還不能接：格數不對，先照 README/bench 說明的下一步處理")
+    # 判準是「載得進來 + 格數正確」；Loop 本身不是問題（舊版把它當失敗條件，
+    # 等於把唯一能用的那顆模型判死）
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

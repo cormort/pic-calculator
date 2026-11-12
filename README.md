@@ -186,7 +186,8 @@ OCR 信心值可不可信？
    限縮，但要不要接受誤刪風險需要決定。
 2. **科目名稱比對忽略標點**：「、」這類標點常漏讀，會讓科目／合計列的比對失敗。
    比對時把標點去掉是低風險改動，只是還沒做。
-3. **表格結構模型（SLANet 這類）**。沒有內部格線、合併儲存格、複雜表頭這幾類，靠調整切欄
+3. **表格結構模型（SLANet 這類）** —— 已轉好並在瀏覽器實測可用（`pic-calculator/static/models/slanet_plus.onnx`，
+   詳見 `bench/experiments/SLANET_FINDINGS.md`），還沒接進 worker。沒有內部格線、合併儲存格、複雜表頭這幾類，靠調整切欄
    規則已經到極限（實測 borderless 只有 23%／數字 0%）—— 需要一個直接輸出「哪個字屬於哪一格」
    的小模型（ONNX 約 7.7MB、MIT）。**已驗證模型本身可行**：用官方 `TableLabelDecode`
    （`merge_no_span_structure=True`，字典要把 `<td>` 換成 `<td></td>`、`sos` 是座標佔位符）
