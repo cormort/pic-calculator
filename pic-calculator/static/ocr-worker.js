@@ -454,6 +454,19 @@ async function splitStraddling(canvas, results, grid, svc) {
     if (!cuts.length || r.text.trim().length < 2 || isNumeric(r.text) || budget <= 0) { out.push(r); continue; }
 
     const x = cuts[0];
+    // 「項次＋科目」被框成一個字時，文字本身就會說話：「1人事費」＝代號 1 ／ 科目 人事費。
+    // 這種前綴代號（數字、字母、1-1 形式）後面接中文的，直接依文繞切，比依框寬比例準：
+    // 偵測框的 padding 讓框的左緣離文字很遠，按比例切常常把「1」跟「人」切在一起。
+    const codeSplit = r.text.match(/^([0-9０-９A-Za-z][0-9０-９A-Za-z\-./]{0,3})\s*([\u4e00-\u9fff][\s\S]*)$/);
+    // 再確認一次「線的位置」與「代號該佔的寬度」不要差太遠，避免把「2024年報」這種切開
+    const codeFrac = codeSplit ? charUnits(codeSplit[1]) / Math.max(1, [...r.text].reduce((n, ch) => n + charUnits(ch), 0)) : 0;
+    const fracNow = (x - r.box.x) / Math.max(1, r.box.width);
+    // 代號本身就是數字（「1人事費」的 1、項次欄的 2），所以不能沿用「整格是數字就不拆」那條
+    if (codeSplit && Math.abs(fracNow - codeFrac) < 0.45) {
+      out.push({ ...r, text: codeSplit[1], box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: codeSplit[2], box: { ...r.box, x, width: r.box.x + r.box.width - x } });
+      continue;
+    }
     // 先用字寬比例快速切一次：像「1-1主 → 1-1 ／ 主」這種看得出來的，
     // 就不必再花時間跑兩次辨識（乾淨掃描件大多是這種）
     const frac = (x - r.box.x) / Math.max(1, r.box.width);

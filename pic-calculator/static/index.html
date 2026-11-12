@@ -1084,7 +1084,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v14';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v17';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1299,6 +1299,12 @@ function repairNumericCells(data, confidence) {
       let s = toHalfWidth(orig).replace(MINUS_VARIANTS, '-').trim();
       // 「969,.524」逗號與句點黏在一起：多出來的那一個是雜訊
       s = s.replace(/,\./g, ',').replace(/\.(?=,)/g, '');
+      // 數字後面黏著表格線／雜訊（「12,345 ]」「200,000|」）：去掉結尾非數字字元。
+      // 只動「去掉後整格就是數字」的情況，而且改完仍要通過驗算，錯了會被紅字抓出來
+      if (isNaN(parse(s))) {
+        const trimmed = s.replace(/[\s\]\)\|\}、，。」”'’;:；：!！?？>»]+$/g, '');
+        if (trimmed && !isNaN(parse(trimmed))) s = trimmed;
+      }
       // 全形括號負數
       s = fixThousandDots(s);
       if (!isNaN(parse(s)) && /[A-Za-z]/.test(s) === false) {
