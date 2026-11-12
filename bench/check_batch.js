@@ -32,7 +32,10 @@ const CASES = [
   const waitApp = () => page.waitForFunction(
     () => typeof handleFiles === "function" && typeof batchJump === "function", undefined, { timeout: 60000 });
 
+  // 注意：GitHub Pages 的根網址是 meta refresh 轉址，載入後還會再導一次；
+  // 先等到應用程式真的跑起來，再去碰 localStorage（否則 evaluate 會撞到導航）
   await page.goto(BASE, { waitUntil: "load" });
+  await waitApp();
   await page.evaluate(() => { try { localStorage.setItem("pcAutoAnalyze", "1"); } catch (e) {} });
   await page.reload({ waitUntil: "load" });
   await waitApp();

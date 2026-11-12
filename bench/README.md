@@ -68,6 +68,10 @@ node bench/check_batch.js
 驗：三張圖排隊後逐張辨識、狀態（✅／❌）正確、跳回第 1 張結果與狀態不亂、
 總表的差異總額與「看不懂的數字格」數字正確、CSV 標頭與列數正確。
 
+> 對線上站跑要小心一件事：GitHub Pages 的根網址是 **meta refresh 轉址**，載入後會再導一次。
+> 腳本一定要先等「應用程式跑起來」再碰 `localStorage`／`evaluate`，否則會撞到導航
+> （`Execution context was destroyed`）。三支檢查腳本都已照這個順序寫。
+
 貼上文字的解析也有回歸腳本（不需要模型，約 15 秒）：
 
 ```bash
