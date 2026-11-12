@@ -13,8 +13,38 @@
 - jingsongliu/onnxocr_model 的 slanet-plus.onnx：輸出 8 個座標／50 類別，
   但同一組預處理解碼出來是 `</td></thead><tbody>` 這種不合法的開頭，猜測 vocab 對不上。
 
-結論：要做這條路，得自己用 paddle2onnx 轉 PaddleOCR 官方的 SLANet_plus（含官方
-table_structure_dict 與 TableLabelDecode），逐格對照官方輸出驗證，而不是拿現成 ONNX 硬接。
+結論：要做這條路，得自己轉 PaddleOCR 官方的模型，而不是拿現成 ONNX 硬接。
+
+## 第二次嘗試：自己轉（2026-11-12，同樣沒成功，但卡點換了）
+
+環境：Python 3.11（3.14 裝不了 paddle）＋ paddlepaddle 3.3.1 ＋ paddle2onnx 2.1.0。
+模型：官方 `ch_ppstructure_mobile_v2.0_SLANet_infer.tar`
+（https://paddleocr.bj.bcebos.com/ppstructure/models/slanet/ch_ppstructure_mobile_v2.0_SLANet_infer.tar）
+
+```bash
+python3.11 -m venv .venv-paddle
+.venv-paddle/bin/pip install paddlepaddle paddle2onnx onnx packaging
+.venv-paddle/bin/paddle2onnx --model_dir ch_ppstructure_mobile_v2.0_SLANet_infer \
+  --model_filename inference.pdmodel --params_filename inference.pdiparams \
+  --save_file slanet_official.onnx --opset_version 16
+```
+
+轉檔「成功」（7.7MB），但 **onnxruntime 載不進來**：
+
+```
+Node (Concat.27) Op (Concat) [ShapeInferenceError] axis must be in [-rank, rank-1]
+```
+
+追進去看，paddle2onnx 為了支援動態形狀，把形狀運算翻成 `Slice(Shape) → Squeeze → Cast → Concat`
+的純量鏈，ORT 不接受「純量 Concat」（`Cannot concatenate scalars`）。縮放器也只能部分折疊。
+
+下一步（還沒做）三選一：
+1. 把輸入固定成 [1,3,488,488] 後做 ONNX 圖手術：把那幾個純量 Concat 換成常數（形狀既定，值算得出來）
+2. 改用 Paddle 3.x 原生 `paddle.onnx.export`（動態圖 export）而不是 paddle2onnx
+3. 換成離線轉檔（Linux + 較舊的 paddle2onnx 1.0.x，社群回報 SLANet 可用）
+
+驗收方式已備好：先拿 `/tmp/thick_table.png`（3×4 粗線表）確認解出 15 格，再跑
+`bench/probe/g-borderless.png`。在「粗線 3×4 都解不出 15 格」之前，不要接進 App。
 """
 import sys
 import numpy as np
