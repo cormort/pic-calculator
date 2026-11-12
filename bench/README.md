@@ -59,6 +59,15 @@ node bench/compare.js out/probe.json --set=probe
 實測格級／數字格 **100%**。沒有文字層的掃描 PDF 會自動退回 OCR（`/tmp/scanned.pdf` 那種）。
 用瀏覽器手動驗：選這個 PDF → 摘要應該出現「本頁取自 PDF 文字層」。
 
+貼上文字的解析也有回歸腳本（不需要模型，約 15 秒）：
+
+```bash
+node bench/check_paste.js
+```
+
+驗 Tab／CSV／連續空白／一行一筆／單欄金額五種輸入，以及「按鈕 → 面板 → 解析」的 UI 路徑。
+（CSV 那個案例特別驗「千分位逗號不能被當分隔符」—— 這是最容易默默錯掉的地方。）
+
 **混合 PDF**（同一份文件幾頁電子檔、幾頁掃描）：`probe/shots/mixed-3pages.pdf`
 （文字頁 → 掃描頁 → 文字頁）。有現成的回歸腳本：
 

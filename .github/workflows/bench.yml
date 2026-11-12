@@ -39,6 +39,10 @@ jobs:
           node bench/run_ocr.js --quality=small --out=out/run.json
           node bench/compare.js out/run.json
 
+      # 貼上文字解析：不需要模型（約 15 秒），決定性高，壞掉就該紅。
+      - name: 貼上文字／表格解析
+        run: node bench/check_paste.js --base=http://127.0.0.1:8765/
+
       # 混合 PDF（文字頁 → 掃描頁 → 文字頁）：驗逐頁判斷與換頁狀態。
       # if: always() —— 上面那步失敗（模型下載失敗等）也要跑這個，它不依賴模型。
       - name: 混合 PDF 逐頁判斷
