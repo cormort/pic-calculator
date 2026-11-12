@@ -91,6 +91,13 @@
   .crop-handle::after { content: ""; position: absolute; inset: 13px; border-radius: 50%; background: #fff; border: 3px solid var(--primary); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
   #crop-hint { text-align: center; color: var(--muted); font-size: .82rem; margin-top: 14px; }
 
+  #update-row { text-align: center; margin-top: 24px; font-size: .82rem; color: var(--muted); }
+  #update-bar {
+    display: none; position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    z-index: 10; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 999px;
+    background: var(--text); color: #fff; font-size: .9rem; box-shadow: 0 4px 16px rgba(0,0,0,.3); white-space: nowrap;
+  }
+
   #camera-section { display: none; margin-top: 16px; }
   #video { width: 100%; max-height: 280px; border-radius: 10px; border: 1px solid var(--border); background: #000; }
 
@@ -349,7 +356,14 @@
     </div>
   </div>
 
+  <p id="update-row">
+    <button class="btn btn-ghost btn-sm" onclick="checkUpdate(true)">🔄 檢查更新</button>
+    <span id="update-status"></span>
+  </p>
+
 </div>
+
+<div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
 <script src="smart_total.js"></script>
 <script>
@@ -1343,6 +1357,30 @@ if ('serviceWorker' in navigator) {
     console.log('SW registration failed:', err);
   });
 }
+
+/* 檢查更新：裝成 App 後很少整頁重新載入，所以開啟時、回到前景時各問一次伺服器。
+   比對的是 index.html 的 Last-Modified 與目前這一頁載入時的版本（離線快取開的頁面也適用）。
+   ponytail: 只看 index.html；若只改了 ocr-worker.js / smart_total.js 不會提示，但重新開啟仍會拿到新檔 */
+async function checkUpdate(manual) {
+  const status = document.getElementById('update-status');
+  if (manual) status.textContent = '檢查中…';
+  try {
+    const resp = await fetch('index.html', { method: 'HEAD', cache: 'no-store' });
+    const remote = Date.parse(resp.headers.get('Last-Modified') || '');
+    if (!resp.ok || isNaN(remote)) throw new Error('no version info');
+    const hasNew = remote - Date.parse(document.lastModified) > 1000;
+    document.getElementById('update-bar').style.display = hasNew ? 'flex' : 'none';
+    if (manual) status.textContent = hasNew ? '有新版本' : '已是最新版本';
+  } catch (err) {
+    if (manual) status.textContent = '無法檢查（可能離線）';
+  }
+}
+async function applyUpdate() {
+  try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch (err) { /* 忽略 */ }
+  location.reload();
+}
+checkUpdate(false);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(false); });
 </script>
 </body>
 </html>
