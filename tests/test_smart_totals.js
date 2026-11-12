@@ -101,7 +101,7 @@ const opts = { parse: parseNum, tolerance, numericCols: [1, 2], percentCols: [] 
   const t = [["總金額"], ["122,226"], ["2,353"], ["2,765"], ["1,170,285"]];
   t[4] = [String(122226 + 2353 + 2765)];
   const ok = SmartTotals.evaluate(t, { parse: parseNum, tolerance, numericCols: [0] });
-  assert.strictEqual(ok.implicit, true);
+  assert.strictEqual(ok.implicit, 'last');   // 值現在是 'last' / 'max' / 'mixed'（哪種猜法）
   assert.strictEqual(ok.confirmed.length, 1);
   assert.strictEqual(ok.confirmed[0].r, 4);
   const bad = SmartTotals.evaluate([["總金額"], ["1"], ["2"], ["99"]], { parse: parseNum, tolerance, numericCols: [0] });

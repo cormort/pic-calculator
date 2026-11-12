@@ -562,7 +562,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js"></script>
+<script src="smart_total.js?v=44"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -1296,7 +1296,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v43';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v44';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2512,7 +2512,15 @@ function renderSmartNote() {
   const checked = confirmed.length + unconfirmed.length;
   if (implicit) {
     kind = 'ok';
-    html = `✅ <strong>自動驗算：最後一列等於上方各列加總</strong>（${confirmed.length} 欄相符）。可直接修改數字或點欄/列手動調整。`;
+    // implicit 的值：'last'（最後一列）／'max'（最大值那一列）／'mixed'（兩種都用到）
+    const how = implicit === 'max' ? '最大值那一列'
+      : implicit === 'mixed' ? '下方/最大值的合計列'
+      : '最後一列';
+    html = `✅ <strong>自動驗算：${how}等於上方各列加總</strong>（${confirmed.length} 欄相符）。`
+      + (implicit === 'max'
+        ? '這張表沒有「合計／小計／總計／賸餘／短絀」這類標籤，所以用<strong>數值最大的那一列</strong>當合計列。'
+        : '')
+      + '可直接修改數字或點欄/列手動調整。';
   } else if (!totalRows.length) {
     kind = 'warn';
     html = '⚠️ <strong>尚未驗算</strong>：找不到「合計/小計/總計/總額」列。'

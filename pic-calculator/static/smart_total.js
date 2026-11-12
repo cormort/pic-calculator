@@ -5,7 +5,9 @@
 (function (root) {
   "use strict";
 
-  const TOTAL_SUFFIX = /(合計|小計|總計|總額)$/;
+  // 「合計/小計/總計/總額」是通用寫法；損益表常用「本期賸餘」「本期短絀」「營業利益」
+  // 「營業損失」當結果列 —— 這些也算合計列，否則整張損益表會變成「找不到合計列」。
+  const TOTAL_SUFFIX = /(合計|小計|總計|總額|賸餘|剩餘|結餘|短絀|淨利|淨損|利益|損失)$/;
   const TOTAL_PREFIX = /^(grand\s+total|total|subtotal)\b/i;
 
   function isTotalLabel(label) {
@@ -122,24 +124,54 @@
     // 每個數字欄的最後一個數字若等於上方連續數字（至少 2 個）的加總，就當成合計。
     // 只認相符的情況；不相符時無從判斷那格是不是合計，所以不報錯
     if (!totalRows.length) {
-      const hits = [];
-      for (const c of numericCols) {
-        if (percentCols.has(c)) continue;
-        let r = table.length - 1;
-        while (r >= 0 && isNaN(parse(table[r]?.[c]))) r--;
+      // 沒有「合計/小計/總計/賸餘/短絀…」這種標籤時，用兩個猜法：
+      //   a) 最後一列＝上方連續數字的加總（原本的做法）
+      //   b) 最大值那一列＝上方連續數字的加總
+      //      （報表沒寫合計、或整欄是負值時，最大的那個數通常就是結果列）
+      const check = (c, r, how) => {
+        if (r == null || r < 0) return null;
+        const actual = parse(table[r]?.[c]);
+        if (isNaN(actual)) return null;
         let sum = 0, n = 0;
         for (let k = r - 1; k >= 0; k--) {
           const v = parse(table[k]?.[c]);
           if (isNaN(v)) break;
           sum += v; n++;
         }
-        const actual = parse(table[r]?.[c]);
-        if (n >= 2 && Math.abs(sum - actual) <= tolerance(actual))
-          hits.push({ r, c, label: rowLabel(table[r], parse) || "最後一列", actual });
+        if (n < 2 || Math.abs(sum - actual) > tolerance(actual)) return null;
+        return { r, c, label: rowLabel(table[r], parse) || (how === 'max' ? '最大值那一列' : '最後一列'),
+          actual, how, expected: sum };
+      };
+
+      const lastHits = [];
+      for (const c of numericCols) {
+        if (percentCols.has(c)) continue;
+        let r = table.length - 1;
+        while (r >= 0 && isNaN(parse(table[r]?.[c]))) r--;
+        const hit = check(c, r, 'last');
+        if (hit) lastHits.push(hit);
       }
+      const hits = lastHits.length ? lastHits : (() => {
+        const maxHits = [];
+        for (const c of numericCols) {
+          if (percentCols.has(c)) continue;
+          // 這一欄的最大值（含負值欄：最大的那個通常就是結果列）
+          let rMax = null, best = -Infinity;
+          for (let r = 1; r < table.length; r++) {
+            const v = parse(table[r]?.[c]);
+            if (isNaN(v)) continue;
+            if (v > best) { best = v; rMax = r; }
+          }
+          const hit = check(c, rMax, 'max');
+          if (hit) maxHits.push(hit);
+        }
+        return maxHits;
+      })();
+
       if (hits.length) {
         const rows = [...new Set(hits.map((h) => h.r))].map((r) => ({ r, label: hits.find((h) => h.r === r).label }));
-        return { totalRows: rows, confirmed: hits, unconfirmed: [], implicit: true };
+        return { totalRows: rows, confirmed: hits, unconfirmed: [],
+          implicit: hits.every((h) => h.how !== 'max') ? 'last' : hits.every((h) => h.how !== 'last') ? 'max' : 'mixed' };
       }
     }
     return { totalRows, confirmed, unconfirmed };
