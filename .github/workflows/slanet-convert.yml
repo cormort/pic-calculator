@@ -69,8 +69,10 @@ jobs:
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
 
+      # 即使驗收沒過也上傳：Loop 是 SLANet 解碼器的迴圈，版本換不掉，
+      # 真正該問的是「onnxruntime-web 到底載不載得進來」，那要用檔案在瀏覽器裡實測
       - name: 上傳 ONNX
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: slanet-onnx-${{ matrix.label }}
