@@ -7,7 +7,7 @@ const path = require("path");
 
 const html = fs.readFileSync(
   path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
-const src = ["squashLabel", "templateKey", "makeTemplate", "matchTemplate"]
+const src = ["squashLabel", "templateKey", "columnShape", "makeTemplate", "matchTemplate"]
   .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0])
   .join("\n");
 const T = new Function(src + "\nreturn { makeTemplate, matchTemplate };")();
@@ -94,4 +94,22 @@ assert.deepStrictEqual(
   T.matchTemplate(commaTpl, [["科目", "金額"], ["不動產廠房及設備", "100"], ["合計", "100"]], labelOf).row,
   { plus: [1], minus: [], total: 2 });
 
-console.log("PASS  沿用上一張設定：欄數／表頭比對、合計列依標籤、列角色依科目、標點差異");
+// 欄數、表頭都相同，但欄位內容型態不同（金額欄變成文字欄）→ 不沿用。
+// 硬套欄角色會產生最危險的結果：錯了卻顯示「驗算正確」
+const shapeA = [
+  ["科目", "113年1月預算", "113年1月實支", "餘額"],
+  ["人事費", "1,000", "800", "200"],
+  ["業務費", "500", "450", "50"],
+];
+const shapeTpl = T.makeTemplate(shapeA, { col: { plus: [1], minus: [2], total: 3 }, row: empty() }, new Set(), labelOf);
+const shapeB = [
+  ["科目", "113年2月預算", "113年2月實支", "餘額"],
+  ["人事費", "說明甲", "說明乙", "說明丙"],
+  ["業務費", "說明丁", "說明戊", "說明己"],
+];
+assert.strictEqual(T.matchTemplate(shapeTpl, shapeB, labelOf).ok, false);
+// 型態相同（都還是數字）→ 照樣沿用
+const shapeC = shapeB.map((r, i) => i === 0 ? r : r.map((v, j) => j === 0 ? v : "1"));
+assert.strictEqual(T.matchTemplate(shapeTpl, shapeC, labelOf).ok, true);
+
+console.log("PASS  沿用上一張設定：欄數／表頭比對、合計列依標籤、列角色依科目、標點差異、欄位型態");

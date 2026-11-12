@@ -227,6 +227,70 @@ function rectifiedCanvas(bitmap, quad) {
 }
 
 /* =============================================================
+   送 OCR 前的照明正規化
+   ============================================================= */
+// 實拍最大的殺手不是模糊，而是不均勻照明：半邊陰影、手機閃光、檯燈造成
+// 一邊 240 一邊 120，模型看到的是兩種字。做法是每個像素除以「附近平均亮度」
+// （除以低頻背景），把亮度差壓平、筆畫保留下來；背景在 1/8 解析度上估，
+// 成本可忽略。只在送 OCR 的那一份做，找格線用原本的 gray。
+// 只在「照明真的不均勻」的照片上做 —— 量測結果：對半邊陰影的實拍 +10 格，
+// 但對乾淨截圖會掉 1~3 格（多一次重取樣＝多一次失真）。所以先用低頻背景的
+// 亮度分佈判斷這張需不需要，而不是一律套用。
+const OCR_NORMALIZE = true;
+const NORMALIZE_SPREAD = 0.32;   // (p90-p10)/mean 超過這個值＝光線明顯不均
+
+// 1/8 解析度估背景（成本是完整的 1/64），順便算亮度離散程度
+function backgroundStats(gray, W, H) {
+  const S = 8;
+  const bw = Math.max(1, Math.ceil(W / S)), bh = Math.max(1, Math.ceil(H / S));
+  const bg = new Float32Array(bw * bh);
+  for (let v = 0; v < H; v++) {
+    const by = (v / S) | 0;
+    for (let u = 0; u < W; u++) bg[by * bw + ((u / S) | 0)] += gray[v * W + u];
+  }
+  const cell = S * S;
+  let mean = 0;
+  for (let i = 0; i < bg.length; i++) { bg[i] /= cell; mean += bg[i]; }
+  mean /= Math.max(1, bg.length);
+  const sorted = Float32Array.from(bg).sort();
+  const p10 = sorted[Math.floor(sorted.length * 0.1)] || 0;
+  const p90 = sorted[Math.floor(sorted.length * 0.9)] || 0;
+  return { bg, bw, bh, mean, spread: (p90 - p10) / Math.max(1, mean) };
+}
+
+// 每個像素除以低頻背景：亮度差被壓平、筆畫保留
+function normalizedGray(st, gray, W, H) {
+  const { bw, bh, bg } = st;
+  const r = 6;
+  const tmp = new Float32Array(bg.length), blur = new Float32Array(bg.length);
+  for (let y = 0; y < bh; y++) {
+    let sum = 0;
+    for (let x = -r; x <= r; x++) sum += bg[y * bw + Math.min(bw - 1, Math.max(0, x))];
+    for (let x = 0; x < bw; x++) {
+      tmp[y * bw + x] = sum / (2 * r + 1);
+      sum += bg[y * bw + Math.min(bw - 1, x + r + 1)] - bg[y * bw + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < bw; x++) {
+    let sum = 0;
+    for (let y = -r; y <= r; y++) sum += tmp[Math.min(bh - 1, Math.max(0, y)) * bw + x];
+    for (let y = 0; y < bh; y++) {
+      blur[y * bw + x] = sum / (2 * r + 1);
+      sum += tmp[Math.min(bh - 1, y + r + 1) * bw + x] - tmp[Math.max(0, y - r) * bw + x];
+    }
+  }
+  const out = new Uint8ClampedArray(W * H);
+  for (let v = 0; v < H; v++) {
+    const by = Math.min(bh - 1, (v / 8) | 0);
+    for (let u = 0; u < W; u++) {
+      const b = blur[by * bw + Math.min(bw - 1, (u / 8) | 0)] || 1;
+      out[v * W + u] = (gray[v * W + u] / b) * 190;
+    }
+  }
+  return out;
+}
+
+/* =============================================================
    格線偵測：找表格的直線與橫線，讓切欄切列不必靠空白去猜
    ============================================================= */
 // 找格線前的局部對比校正：每個像素除以附近的平均亮度（背景）。
@@ -484,10 +548,29 @@ self.onmessage = async (event) => {
     const svc = await ensureService(msg.quality);
     postStatus('辨識中，請稍候…');
     const bitmap = await decodeImage(msg.buffer);
-    let canvas, grid = null;
+    let canvas, grid = null, rectRef = null, ocrNormalized = false;
     try {
       const rect = rectifiedCanvas(bitmap, msg.quad);
+      rectRef = rect;          // rect 原本是 try 區塊內的 const，外面拿不到（縮圖要用）
       canvas = rect.canvas;
+      if (OCR_NORMALIZE) {
+        // 只換送 OCR 的那一份；canvas 仍保留原始灰階，縮圖對照才不會看起來「被洗白」。
+        // 先看光線分佈：乾淨截圖不套（量測顯示會掉 1~3 格）
+        const st = backgroundStats(rect.gray, rect.width, rect.height);
+        ocrNormalized = st.spread > NORMALIZE_SPREAD;
+        const norm = ocrNormalized ? normalizedGray(st, rect.gray, rect.width, rect.height) : null;
+        if (norm) {
+          const nc = new OffscreenCanvas(rect.width, rect.height);
+          const ng = nc.getContext('2d');
+          const img = ng.createImageData(rect.width, rect.height);
+          for (let i = 0, o = 0; i < norm.length; i++, o += 4) {
+            img.data[o] = img.data[o + 1] = img.data[o + 2] = norm[i];
+            img.data[o + 3] = 255;
+          }
+          ng.putImageData(img, 0, 0);
+          canvas = nc;
+        }
+      }
       try {
         const lineGray = normalizeForLines(rect.gray, rect.width, rect.height);
         grid = {
@@ -519,8 +602,24 @@ self.onmessage = async (event) => {
           score: r.confidence,
         };
       });
-    self.postMessage({ type: 'result', id, confidence, results, grid,
-      backend: { ocr: serviceBackend, layout: layoutBackend() } });
+    // 轉正後的縮圖（ImageBitmap，跨執行緒免拷貝）：主執行緒用它畫「點某格 → 放大原圖對照」。
+    // 只在記憶體裡存在，不上傳、不落地。
+    let preview = null, previewScale = 1;
+    try {
+      if (!rectRef) throw new Error('no rect');
+      const maxDim = 1600;
+      const k = Math.min(1, maxDim / Math.max(rectRef.width, rectRef.height));
+      const pw = Math.max(1, Math.round(rectRef.width * k)), ph = Math.max(1, Math.round(rectRef.height * k));
+      const pc = new OffscreenCanvas(pw, ph);
+      const pg = pc.getContext('2d');
+      pg.imageSmoothingQuality = 'high';
+      pg.drawImage(rectRef.canvas, 0, 0, pw, ph);
+      // 用 Blob 而不是 transferToImageBitmap：後者在部分 Chrome／WebGPU 組合下不支援
+      preview = await pc.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+      previewScale = pw / rectRef.width;   // 原圖 px → 縮圖 px
+    } catch (err) { preview = null; }
+    self.postMessage({ type: 'result', id, confidence, results, grid, preview, previewScale,
+      normalized: ocrNormalized, backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });
   }

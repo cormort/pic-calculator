@@ -150,6 +150,18 @@
   .table-wrap { padding: 8px 8px 16px; overflow: auto; max-height: min(62vh, 620px); }
   @media (max-width: 600px) { .table-wrap { max-height: 54vh; } }
   /* 選取托盤：先選角色，再點欄號／列號 */
+  /* 點格子的原圖對照：固定在右下，不擋表格操作 */
+  #cell-peek { position: fixed; right: 14px; bottom: 14px; z-index: 40; width: 320px;
+    background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 8px 10px 10px; }
+  #cell-peek .peek-head { display: flex; justify-content: space-between; align-items: center;
+    font-size: .82rem; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
+  #cell-peek canvas { display: block; max-width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
+  #cell-peek .peek-note { margin-top: 6px; font-size: .78rem; color: var(--muted); line-height: 1.45; word-break: break-all; }
+  @media (max-width: 600px) {
+    #cell-peek { left: 8px; right: 8px; bottom: 8px; width: auto; }
+  }
+
   /* 驗算範圍／方向（原本只有程式讀值、沒有輸入框，等於寫死表頭第 1 列、全表） */
   .range-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
     margin-top: 10px; font-size: .86rem; color: var(--muted); }
@@ -441,6 +453,16 @@
       </div>
     </div>
 
+    <!-- 點格子時的放大對照：直接看原圖那一格（判斷「0 還是 O」） -->
+    <div id="cell-peek" style="display:none">
+      <div class="peek-head">
+        <span>🔍 原圖對照</span>
+        <button class="btn btn-ghost btn-sm" onclick="hideCellPeek()">✕ 收起</button>
+      </div>
+      <canvas id="peek-canvas"></canvas>
+      <div class="peek-note" id="peek-note"></div>
+    </div>
+
     <!-- 錯誤清單 -->
     <div class="card" id="error-card" style="display:none;">
       <div class="card-header"><span style="color:var(--error)">⚠️ 驗算錯誤</span></div>
@@ -508,10 +530,14 @@ const Validator = {
     for (let c = sColIdx; c < maxCol; c++) {
       if (c === nameColIndex) continue;
       let tempSum = 0, pendingCheck = null;
+      const prevTotals = [];   // 已驗過的合計值：用來支援「合計＝各小計相加」這種結構
       for (let r = hRowIdx + 1; r < maxRow; r++) {
         const row = sheetData[r];
         if (!row) continue;
-        const name = String(row[nameColIndex] || '');
+        // 合計標籤常被打在項次欄（「小計」「合計」），科目欄是空的 —— 讀不到就用該列
+        // 第一個非數字格當名稱，否則自動分組會整張表都找不到合計列
+        const name = String(row[nameColIndex] || '').trim()
+          || String((typeof SmartTotals !== 'undefined' && SmartTotals.rowLabel(row, this._num)) || '');
         const val = this._num(row[c]);
         const isNum = !isNaN(val);
         const isTrig = triggerKeywords.some(k => name.toLowerCase().includes(k.toLowerCase()));
@@ -519,7 +545,16 @@ const Validator = {
         if (isExcl) continue;
         if (isTrig) {
           if (sumDirection === 'bottom') {
-            if (isNum) this._check(r, c, tempSum, val);
+            if (isNum) {
+              // 多數報表的「合計」是「各小計相加」，不是「上一條線之後的加總」——
+              // 先試區塊加總，不符再試已驗過合計的累加，兩者皆非才算錯
+              const tol = Math.max(1.0, Math.abs(val) * 0.005);
+              let calc = tempSum;
+              const alt = prevTotals.reduce((a, b) => a + b, 0);
+              if (prevTotals.length && Math.abs(val - calc) > tol && Math.abs(val - alt) <= tol) calc = alt;
+              this._check(r, c, calc, val);
+              prevTotals.push(val);
+            }
             tempSum = 0;
           } else {
             if (pendingCheck !== null) this._check(pendingCheck.row, c, tempSum, pendingCheck.target);
@@ -932,7 +967,10 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
+const APP_VERSION = 'v8';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
+// 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
+let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
 
 function renderBackendNote() {
   const el = document.getElementById('backend-note');
@@ -954,7 +992,9 @@ function getOcrWorker() {
   if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap !== 'function') {
     throw new Error('此瀏覽器不支援背景 OCR（需要 Web Worker / OffscreenCanvas），請更新瀏覽器。');
   }
-  const worker = new Worker('ocr-worker.js', { type: 'module' });
+  // 版本參數：模組 worker 與 service worker 都會被瀏覽器／PWA 快取，
+  // 改版沒帶參數時，舊版 worker 會被繼續使用（症狀是「改了沒反應」）
+  const worker = new Worker(`ocr-worker.js?v=${APP_VERSION}`, { type: 'module' });
   worker.onmessage = (event) => {
     const msg = event.data || {};
     if (msg.type === 'status') {
@@ -1016,6 +1056,13 @@ async function ocrWords(file, quad) {
   const msg = await workerRequest({ type: 'ocr', quality: ocrQuality, buffer, quad }, [buffer]);
   ocrConfidence = msg.confidence;
   ocrGrid = msg.grid || null;
+  // worker 傳回的是轉正後的縮圖 Blob；轉成 ImageBitmap 才好畫（記得放掉舊的，別累積記憶體）
+  try { ocrPreview?.close?.(); } catch (e) {}
+  ocrPreview = null;
+  ocrPreviewScale = msg.previewScale || 1;
+  if (msg.preview) {
+    try { ocrPreview = await createImageBitmap(msg.preview); } catch (e) { ocrPreview = null; }
+  }
   return msg.results;
 }
 
@@ -1172,7 +1219,7 @@ function repairNumericCells(data, confidence) {
 
 // grid（可省略）：Worker 偵測到的表格格線 { v: [{a,b}], h: [{a,b}] }，直線 x = a + b*y、橫線 y = a + b*x
 function buildTable(words, grid) {
-  if (!words.length) return { data: [], confidence: [] };
+  if (!words.length) return { data: [], confidence: [], boxes: [] };
   const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
 
   // 偵測有時把同一列相鄰幾欄的數字框成一個框（文字是「50,000 25,264 8,692」）。
@@ -1346,14 +1393,29 @@ function buildTable(words, grid) {
   let outRows = cellRows.map((row, i) => {
     const out = Array(ncols).fill('');
     const conf = Array(ncols).fill(1);
+    // 每格在「轉正後」圖上的像素範圍：給「點某格 → 放大原圖對照」用
+    // （y 用整列的字框範圍，同一列的格子共用；x 用該格自己的字框）
+    const box = Array(ncols).fill(null);
+    // 字框有 y1/y2（合併後的 cell 也有）；歪斜校正只改 x，所以 y 直接用字框的
+    const y1r = row.length ? Math.min(...row.map(w => (w.y1 ?? (w.cy - (w.h || 0) / 2)))) : 0;
+    const y2r = row.length ? Math.max(...row.map(w => (w.y2 ?? (w.cy + (w.h || 0) / 2)))) : 0;
     for (const c of row) {
       const ci = colOf(c);
       out[ci] = out[ci] ? out[ci] + ' ' + c.text : c.text;
       conf[ci] = Math.min(conf[ci], Number.isFinite(c.score) ? c.score : 1);
+      // 優先用這一格自己的 y 範圍（合併後的 cell 也有），沒有才用整列——
+      // 用整列會把上下列的字一起框進對照圖，看起來很亂
+      const cy1 = Number.isFinite(c.y1) ? c.y1 : y1r;
+      const cy2 = Number.isFinite(c.y2) ? c.y2 : y2r;
+      const b = { x1: c.x1, x2: c.x2, y1: cy1, y2: cy2 };
+      const prev = box[ci];
+      box[ci] = prev
+        ? { x1: Math.min(prev.x1, b.x1), x2: Math.max(prev.x2, b.x2), y1: prev.y1, y2: prev.y2 }
+        : b;
     }
     // 這一列落在第幾條橫線之間（0 與 hLines.length 表示在表格外）
     const x = avg(rows[i], w => w.ox), y = avg(rows[i], w => w.oy);
-    return { out, conf, band: hLines.reduce((n, l) => n + (l.a + l.b * x < y ? 1 : 0), 0) };
+    return { out, conf, box, band: hLines.reduce((n, l) => n + (l.a + l.b * x < y ? 1 : 0), 0) };
   });
 
   // 橫線之間有兩行字（表頭或科目名稱換行：「臺灣大學(大」＋「學)」）→ 併回同一列。
@@ -1374,6 +1436,13 @@ function buildTable(words, grid) {
       for (const r of g.slice(1)) {
         r.out.forEach((t, c) => { if (t) first.out[c] = joinText(first.out[c], t, ''); });
         r.conf.forEach((v, c) => { first.conf[c] = Math.min(first.conf[c], v); });
+        r.box.forEach((b, c) => {
+          if (!b) return;
+          first.box[c] = first.box[c]
+            ? { x1: Math.min(first.box[c].x1, b.x1), x2: Math.max(first.box[c].x2, b.x2),
+                y1: Math.min(first.box[c].y1, b.y1), y2: Math.max(first.box[c].y2, b.y2) }
+            : b;
+        });
       }
       return [first];
     });
@@ -1396,6 +1465,7 @@ function buildTable(words, grid) {
       ...r,
       out: r.out.filter((_, c) => !emptyCols.includes(c)),
       conf: r.conf.filter((_, c) => !emptyCols.includes(c)),
+      box: r.box.filter((_, c) => !emptyCols.includes(c)),
     }));
   }
   // 再去掉頭尾整欄空白
@@ -1406,6 +1476,7 @@ function buildTable(words, grid) {
   return {
     data: outRows.map(r => r.out.slice(from, keep)),
     confidence: outRows.map(r => r.conf.slice(from, keep).map(s => Math.round(s * 1000) / 1000)),
+    boxes: outRows.map(r => r.box.slice(from, keep)),
   };
 }
 
@@ -1436,6 +1507,7 @@ async function analyzeImage() {
     const stripped = stripGarbageText(repaired.data, headerRowCount());
     rememberTemplate();   // 換表之前先記下上一張的驗算設定
     tableData = stripped.data;
+    cellBoxes = built.boxes || [];   // 每格在轉正圖上的像素範圍（給原圖對照用）
     cellConfidence = built.confidence;
     cellRepairs = new Map([...repaired.repairs, ...stripped.repairs].map(x => [x.r + ',' + x.c, x]));
     manualTotalRows.clear();
@@ -1485,6 +1557,8 @@ function resetAll() {
   smartUnparsed = [];
   smartSuspects = [];
   undoStack.length = 0;      // 換下一張表，上一張的復原紀錄不該留著
+  cellBoxes = [];
+  hideCellPeek();
   reviewPos = -1;
   renderUndoButton();
   clearSmart();
@@ -1868,6 +1942,54 @@ function applyMultiplyFix(r, c, value) {
   renderSummary({ kind: 'ok', text: `已把第 ${r + 1} 列／第 ${c + 1} 欄改成 ${tableData[r][c]}（依「單價 × 數量」推得）。` });
 }
 
+/* 點格子 → 放大原圖對照：OCR 常把 0／O、1／l、5／6 搞混，
+ * 只給整張原圖等於叫人自己拿放大鏡找那一格。這裡直接畫那一格（最多放大 6 倍）。 */
+let peekKey = '';
+function showCellPeek(r, c) {
+  const panel = document.getElementById('cell-peek');
+  const canvas = document.getElementById('peek-canvas');
+  const note = document.getElementById('peek-note');
+  if (!panel || !canvas) return;
+  const box = cellBoxes?.[r]?.[c];
+  if (!ocrPreview || !box) { panel.style.display = 'none'; return; }
+  const k = ocrPreviewScale || 1;
+  const padX = Math.max(4, (box.x2 - box.x1) * 0.06);
+  const padY = Math.max(3, (box.y2 - box.y1) * 0.22);
+  const sx = Math.max(0, (box.x1 - padX) * k);
+  const sy = Math.max(0, (box.y1 - padY) * k);
+  const sw = Math.max(1, Math.min(ocrPreview.width - sx, (box.x2 - box.x1 + padX * 2) * k));
+  const sh = Math.max(1, Math.min(ocrPreview.height - sy, (box.y2 - box.y1 + padY * 2) * k));
+  const scale = Math.max(1, Math.min(6, 296 / sw));
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.max(1, Math.round(sw * scale * dpr));
+  canvas.height = Math.max(1, Math.round(sh * scale * dpr));
+  const g = canvas.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  try { g.drawImage(ocrPreview, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height); }
+  catch (err) { panel.style.display = 'none'; return; }
+  canvas.style.width = Math.round(sw * scale) + 'px';
+  canvas.style.height = Math.round(sh * scale) + 'px';
+  const text = String(tableData?.[r]?.[c] ?? '');
+  note.textContent = `第 ${r + 1} 列／第 ${c + 1} 欄：「${text}」` + (scale > 1.15 ? `　放大 ${scale.toFixed(1)}×` : '');
+  panel.style.display = 'block';
+  peekKey = r + ',' + c;
+}
+function hideCellPeek() {
+  const panel = document.getElementById('cell-peek');
+  if (panel) panel.style.display = 'none';
+  peekKey = '';
+}
+document.addEventListener('focusin', (ev) => {
+  const td = ev.target?.closest?.('#data-table td[data-r]');
+  if (td) showCellPeek(+td.dataset.r, +td.dataset.c);
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && peekKey) hideCellPeek();
+});
+
 function jumpToCell(r, c) {
   const td = document.querySelector(`#data-table td[data-r="${r}"][data-c="${c}"]`);
   if (!td) return;
@@ -2050,6 +2172,20 @@ function templateKey(s) {
   return String(s ?? '').replace(/[\s\d]+/g, '').replace(punct, '');
 }
 
+// 欄的「形狀」＝每一欄有幾成是數字。同一份報表的下一張會幾乎一樣；
+// 欄數相同但語意不同的兩張表（金額欄↔數量欄）則差很多 —— 用來擋「硬套欄角色」
+function columnShape(table) {
+  const cols = Math.max(0, ...table.map(r => r.length));
+  const shape = [];
+  for (let c = 0; c < cols; c++) {
+    const vals = table.slice(1).map(r => String(r?.[c] ?? '').trim()).filter(Boolean);
+    if (!vals.length) { shape.push(0); continue; }
+    const numeric = vals.filter(v => !isNaN(parseFloat(v.replace(/[,，\s$]/g, '')))).length;
+    shape.push(numeric / vals.length);
+  }
+  return shape;
+}
+
 function makeTemplate(table, selection, totalRows, labelOf) {
   const label = r => squashLabel(labelOf(table[r]));
   const size = k => k.plus.length + k.minus.length + (k.total !== null ? 1 : 0);
@@ -2063,6 +2199,7 @@ function makeTemplate(table, selection, totalRows, labelOf) {
     row: size(row) ? { plus: row.plus.map(label), minus: row.minus.map(label),
       total: row.total !== null ? label(row.total) : null } : null,
     totals,
+    shape: columnShape(table),
   };
 }
 
@@ -2087,6 +2224,20 @@ function matchTemplate(tpl, table, labelOf) {
     else rowSkipped = true;
   }
   const col = tpl.col && { plus: [...tpl.col.plus], minus: [...tpl.col.minus], total: tpl.col.total };
+  // 欄的形狀也要相近：欄數、表頭都對得上，但「金額欄」在這張其實是「數量欄」時，
+  // 硬套欄角色會產生最危險的結果 —— 錯了卻顯示驗算正確
+  if (Array.isArray(tpl.shape) && tpl.shape.length === ncols) {
+    const cols = ncols;
+    let diff = 0, n = 0;
+    for (let c = 0; c < cols; c++) {
+      const vals = table.slice(1).map(r => String(r?.[c] ?? '').trim()).filter(Boolean);
+      if (!vals.length) continue;
+      const numeric = vals.filter(v => !isNaN(parseFloat(v.replace(/[,，\s$]/g, '')))).length / vals.length;
+      diff += Math.abs(numeric - (tpl.shape[c] ?? 0));
+      n += 1;
+    }
+    if (n && diff / n > 0.34) return { ok: false, reason: '欄位內容的型態不同（可能不是同一張報表）' };
+  }
   const totals = labels.flatMap((l, r) => l && tpl.totals.includes(l) ? [r] : []);
   return { ok: true, col, row, rowSkipped, totals };
 }

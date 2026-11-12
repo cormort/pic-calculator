@@ -1,0 +1,19 @@
+# 單元測試（純函式，不需要瀏覽器與 OCR 模型）
+# 「真 OCR」的準確率量測要下載模型、開瀏覽器，跑在 `pic-calc-bench/`（見 README §7），
+# 不放進 CI：它慢、需要 GPU/瀏覽器，而且準確率是數字不是布林值。
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 單元測試
+        run: |
+          for f in tests/*.js; do echo "== $f"; node "$f"; done
