@@ -923,12 +923,15 @@ function loadFile(file, opts = {}) {
         .then(box => {
           if (currentFile !== file || quadTouched) return;
           if (box) setQuad(box, '已自動框出表格。');
-          else setQuad(quad, '找不到明顯表格，請手動拖曳四個角。');
-          if (box && autoAnalyze) analyzeImage();   // 自動框到表格就直接跑辨識
+          else setQuad(quad, '找不到明顯表格（可能整張就是表格），' + (autoAnalyze ? '先辨識整張圖；不對再拖曳四個角重辨識。' : '請手動拖曳四個角。'));
+          // 框不到表格也照跑：截圖常常整張就是表格，停在這裡等使用者按，看起來像「沒有自動辨識」
+          if (autoAnalyze) analyzeImage();
         })
         .catch(err => {
           console.warn('表格偵測失敗，改為辨識整張圖', err);   // 偵測只是輔助，失敗不擋辨識
-          if (currentFile === file && !quadTouched) setQuad(quad, '無法自動偵測表格，請手動拖曳四個角。');
+          if (currentFile !== file || quadTouched) return;
+          setQuad(quad, '無法自動偵測表格，' + (autoAnalyze ? '先辨識整張圖；不對再拖曳四個角重辨識。' : '請手動拖曳四個角。'));
+          if (autoAnalyze) analyzeImage();
         });
     };
     img.src = ev.target.result;
