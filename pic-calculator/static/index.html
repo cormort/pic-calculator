@@ -562,7 +562,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=49"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=50"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -922,22 +922,65 @@ async function openPdf(file) {
    要注意字型編碼：中文常被輸出成「康熙部首」（⾦、⼈、⽫），NFKC 一次就修好。 */
 function pdfTextWords(items, viewport) {
   const out = [];
+  const wsum = s => [...s].reduce((n, ch) => n + charWidth(ch), 0);
   for (const item of items) {
-    const text = (item.str || '').normalize('NFKC').trim();
-    if (!text) continue;
+    const raw = (item.str || '').normalize('NFKC');
+    if (!raw.trim()) continue;
     const m = pdfjsLib.Util.transform(viewport.transform, item.transform);
     const fontSize = Math.hypot(m[2], m[3]) || viewport.scale * 10;
-    const x1 = m[4];
-    const x2 = x1 + Math.max(item.width * viewport.scale, fontSize * 0.3);
-    const baseline = m[5];
-    const y1 = baseline - fontSize * 0.85;
-    const y2 = baseline + fontSize * 0.25;
-    out.push({
-      text, x1, x2, y1, y2,
-      cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, h: y2 - y1, score: 1,
-    });
+    // 文字前進方向（單位向量）：轉 90° 的表頭也要框在對的位置，不能一律當水平
+    const len = Math.hypot(m[0], m[1]) || 1, ux = m[0] / len, uy = m[1] / len;
+    const adv = Math.max(item.width * viewport.scale, fontSize * 0.3);
+    const total = wsum(raw) || 1;
+    // item.width 含頭尾空白，而且用空白對齊的 PDF 會把幾欄塞進同一個 item
+    // （「項目　　50,000」）：以連續兩個以上的空白切開，各段依字寬比例定位
+    for (const part of raw.matchAll(/\S+(?:\s\S+)*/g)) {
+      const a = wsum(raw.slice(0, part.index)) / total * adv;
+      const b = a + wsum(part[0]) / total * adv;
+      // 四個角：沿基線 a..b，往上 0.85、往下 0.25 個字高（視窗座標 y 向下）
+      const xs = [], ys = [];
+      for (const t of [a, b]) for (const s of [0.85 * fontSize, -0.25 * fontSize]) {
+        xs.push(m[4] + ux * t + uy * s);
+        ys.push(m[5] + uy * t - ux * s);
+      }
+      const x1 = Math.min(...xs), x2 = Math.max(...xs), y1 = Math.min(...ys), y2 = Math.max(...ys);
+      out.push({
+        text: part[0], x1, x2, y1, y2,
+        // h 是「字高」不是框高：轉向的字框很長，拿去算列距會把整張表的列併在一起
+        cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, h: fontSize * 1.1, score: 1,
+      });
+    }
   }
   return out;
+}
+
+/* 文字層不能信的兩種情況，命中就改走 OCR（使用者仍可手動切回文字層）：
+   1. 亂碼：字型沒有 ToUnicode 對照表，取出來是私用區字元或 �
+   2. 掃描檔上的隱藏 OCR 層（「可搜尋 PDF」）：文字是別的 OCR 軟體認的、畫成不可見，
+      品質不明，不能當成「原檔的字」
+   ponytail: 只認「不可見文字」(Tr 3/7)；舊式「文字畫在圖片底下」的掃描檔抓不到，
+   遇到再加「整頁大圖蓋在文字上」的判斷（要追 CTM）。 */
+function textLayerGarbled(words) {
+  const text = words.map(w => w.text).join('');
+  const bad = (text.match(/[�-\u0000-\u001f]/g) || []).length;
+  return bad > text.length * 0.1;
+}
+
+function textMostlyHidden(fnArray, argsArray, OPS) {
+  const shows = [OPS.showText, OPS.showSpacedText, OPS.nextLineShowText, OPS.nextLineSetSpacingShowText];
+  const stack = [];
+  let mode = 0, hidden = 0, visible = 0;
+  for (let i = 0; i < fnArray.length; i++) {
+    const fn = fnArray[i];
+    if (fn === OPS.save || fn === OPS.paintFormXObjectBegin) stack.push(mode);
+    else if (fn === OPS.restore || fn === OPS.paintFormXObjectEnd) mode = stack.pop() ?? 0;
+    else if (fn === OPS.setTextRenderingMode) mode = argsArray[i][0];
+    else if (shows.includes(fn)) {
+      const n = argsArray[i]?.[0]?.length || 1;
+      if (mode === 3 || mode === 7) hidden += n; else visible += n;
+    }
+  }
+  return hidden > visible;
 }
 
 // 有文字層才用（門檻寬鬆：>= 8 個字塊且總字數 >= 20，避免把目錄頁/封面當表格）
@@ -988,9 +1031,20 @@ async function renderPdfPage(n) {
     // 有文字層就別 OCR：向量文字的座標與內容都是精確的
     let words = null;
     try { words = pdfTextWords((await page.getTextContent()).items, viewport); } catch (err) { words = null; }
+    let suspect = '';
+    if (hasUsableTextLayer(words)) {
+      if (textLayerGarbled(words)) suspect = '內容是亂碼（字型缺少對照表）';
+      else {
+        try {
+          const ops = await page.getOperatorList();
+          if (textMostlyHidden(ops.fnArray, ops.argsArray, pdfjsLib.OPS)) suspect = '是掃描檔附帶的隱藏 OCR 文字，品質不明';
+        } catch (err) { /* 判斷不了就照舊信任文字層 */ }
+      }
+    }
     loadFile(pageFile, {
       fromPdf: true,
       textWords: hasUsableTextLayer(words) ? words : null,
+      textSuspect: suspect,
       scannedPage: !hasUsableTextLayer(words),
       pageBlob: blob,
       pageSize: { width: viewport.width, height: viewport.height },
@@ -1018,15 +1072,12 @@ function loadFile(file, opts = {}) {
     pdfDoc = null;               // 選了圖片就離開 PDF 模式
     renderPdfNav();
   }
-  // PDF 文字層：這一頁不必 OCR，words 直接餵 buildTable（座標就是這一頁的像素座標）
-  pendingText = opts.textWords ? { words: opts.textWords, size: opts.pageSize || null } : null;
-  if (opts.textWords && opts.pageBlob) {
-    createImageBitmap(opts.pageBlob).then(bmp => {
-      try { ocrPreview?.close?.(); } catch (e) { /* 忽略 */ }
-      ocrPreview = bmp;
-      ocrPreviewScale = 1;   // 文字座標與頁面圖同一套
-    }).catch(() => { /* 沒有底圖就用列表 */ });
-  }
+  // PDF 文字層：這一頁不必 OCR，words 直接餵 buildTable（座標就是這一頁的像素座標）。
+  // 留到換頁／換檔才清：調整框選後重新辨識仍要走文字層
+  pendingText = opts.textWords
+    ? { words: opts.textWords, size: opts.pageSize || null, blob: opts.pageBlob || null, suspect: opts.textSuspect || '' }
+    : null;
+  useTextLayer = !!pendingText && !pendingText.suspect;
   if (!opts.fromPdf) pendingText = null;
   // 批次換張時不要把佇列清掉；使用者自己選一張新圖才清
   if (!opts.fromBatch && !opts.fromPdf) { batch = []; batchIndex = -1; renderBatchBar(); }
@@ -1296,11 +1347,36 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v49';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v50';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
-let pendingText = null;   // PDF 文字層：{ words }，有值就跳過 OCR
+let pendingText = null;   // 這一頁的 PDF 文字層：{ words, size, blob, suspect }
+let useTextLayer = false; // 用文字層還是 OCR（文字層可疑時預設 OCR；摘要上的按鈕可切換）
+
+function setTextLayer(on) {
+  useTextLayer = on;
+  analyzeImage();
+}
+
+// 文字層的格線：字是向量取的，但欄界、換行併列仍然要靠線。
+// 把頁面圖裁到文字範圍（外加兩個字高，才包得到外框）交給 Worker 找線，再換回頁面座標
+async function textLayerGrid(words, text) {
+  if (!text.blob || !text.size || !words.length) return null;
+  const hs = words.map(w => w.h).sort((a, b) => a - b), pad = 2 * hs[hs.length >> 1];
+  const x = Math.max(0, Math.floor(Math.min(...words.map(w => w.x1)) - pad));
+  const y = Math.max(0, Math.floor(Math.min(...words.map(w => w.y1)) - pad));
+  const w = Math.min(Math.round(text.size.width), Math.ceil(Math.max(...words.map(w => w.x2)) + pad)) - x;
+  const h = Math.min(Math.round(text.size.height), Math.ceil(Math.max(...words.map(w => w.y2)) + pad)) - y;
+  if (w < 20 || h < 20) return null;
+  const buffer = await text.blob.arrayBuffer();
+  const { grid } = await workerRequest({ type: 'grid', buffer, box: { x, y, w, h } }, [buffer]);
+  if (!grid) return null;
+  return {
+    v: grid.v.map(l => ({ a: l.a + x - l.b * y, b: l.b })),   // x = a + b*y
+    h: grid.h.map(l => ({ a: l.a + y - l.b * x, b: l.b })),   // y = a + b*x
+  };
+}
 let scannedPdfPage = false;   // 這一頁是 PDF 的掃描頁（沒有文字層）
 
 function renderBackendNote() {
@@ -1343,7 +1419,7 @@ function getOcrWorker() {
     const job = ocrPending.get(msg.id);
     if (!job) return;
     ocrPending.delete(msg.id);
-    if (msg.type === 'result' || msg.type === 'detect-result') job.resolve(msg);
+    if (msg.type === 'result' || msg.type === 'detect-result' || msg.type === 'grid-result') job.resolve(msg);
     else job.reject(new Error(msg.message || '背景 OCR 失敗'));
   };
   worker.onerror = (event) => {
@@ -1585,16 +1661,24 @@ function buildTable(words, grid) {
 
   // 格線是最可靠的欄界：先記下每個框落在第幾條直線之間（seg），之後不跨線合併、也不跨線併欄
   // 用轉正後的座標比對：線與文字都在同一張轉正圖上量的
+  // out：在表格外（最上與最下橫線之外）。直線延伸出去會把標題「113年度…明細表」分到幾個 seg，
+  // 開頭的「113」又是數字，整列被當成資料列拿去切欄，多出只有標題碎片的空欄。
+  // 所以表格外的字照距離合併（不管 seg），那幾列也不拿來切欄
+  // ponytail: 先只用在 PDF 文字層（exact）；OCR 路徑同理，但要跑過 bench 再放開
+  const top = hLines[0], bottom = hLines[hLines.length - 1];
   words = words.map(w => ({
     ...w, ox: w.cx, oy: w.cy,
     seg: vLines.reduce((n, l) => n + (l.a + l.b * w.cy < w.cx ? 1 : 0), 0),
+    out: !!grid?.exact && hLines.length >= 2
+      && (w.cy < top.a + top.b * w.cx || w.cy > bottom.a + bottom.b * w.cx),
   }));
 
   // 校正歪斜：手機拍照很少完全水平。在 ±15° 內找出讓文字框「排成列」最整齊的角度
   // （把 y 投影到直方圖，越集中分數越高），再把座標轉正後才分列
   const binH = avg(words, w => w.h) / 2;
   let skew = 0, bestScore = -1;
-  for (let deg = -15; deg <= 15; deg += 0.25) {
+  // grid.exact：PDF 文字層的座標是向量算的，沒有歪斜可校正（稀疏的表反而會被誤轉）
+  for (let deg = -15; !grid?.exact && deg <= 15; deg += 0.25) {
     const t = deg * Math.PI / 180, sin = Math.sin(t), cos = Math.cos(t), bins = new Map();
     for (const w of words) { const b = Math.round((w.cy * cos - w.cx * sin) / binH); bins.set(b, (bins.get(b) || 0) + 1); }
     let score = 0;
@@ -1651,7 +1735,7 @@ function buildTable(words, grid) {
         last.score = Math.min(keepScore, Math.max(last.score, w.score ?? 1));
         last.x1 = Math.min(last.x1, w.x1);
         last.x2 = Math.max(last.x2, w.x2);
-      } else if (last && !twoNumbers && last.seg === w.seg && w.x1 - last.x2 <= gapTol) {
+      } else if (last && !twoNumbers && (last.seg === w.seg || w.out) && w.x1 - last.x2 <= gapTol) {
         last.text += (CJK.test(last.text.slice(-1)) || CJK.test(w.text[0]) ? '' : ' ') + w.text;
         last.x2 = Math.max(last.x2, w.x2);
         last.y1 = Math.min(last.y1, w.y1);
@@ -1660,7 +1744,7 @@ function buildTable(words, grid) {
       } else {
         cells.push({
           text: w.text, x1: w.x1, x2: w.x2, y1: w.y1, y2: w.y2,
-          score: w.score ?? 1, seg: w.seg, splitLine: w.splitLine,
+          score: w.score ?? 1, seg: w.seg, splitLine: w.splitLine, out: w.out,
         });
       }
     }
@@ -1671,7 +1755,7 @@ function buildTable(words, grid) {
   // 跨列對齊欄位：用「資料列之間沒有文字覆蓋的垂直空白帶」切欄。
   // 表頭常置中、數字常右對齊，中心點分群會把兩者拆成不同欄；空白帶不會。
   // 有格線時，每兩條直線之間各自切一次：線一定是欄界，線沒抓到的地方仍由空白帶補上
-  const numericRows = cellRows.filter(row => row.some(c => !isNaN(Validator._num(c.text))));
+  const numericRows = cellRows.filter(row => !row[0]?.out && row.some(c => !isNaN(Validator._num(c.text))));
   const sample = numericRows.length ? numericRows : cellRows.filter(r => r.length >= 2);
   const sampleRows = sample.length ? sample : cellRows;
   const heights = words.map(w => w.h).sort((a, b) => a - b);
@@ -1849,14 +1933,22 @@ async function analyzeImage() {
       } catch (err) { /* 偵測失敗已在 loadFile 提示 */ }
     }
     let words, structured = null, fromTextLayer = false;
-    if (pendingText) {
-      // 文字層：座標與內容都精確，直接組表（worker 與模型都不用跑）
+    if (pendingText && useTextLayer) {
+      // 文字層：座標與內容都精確，直接組表（OCR 模型不用跑，只借 Worker 找格線）
       words = filterWordsByQuad(pendingText.words, quad, pendingText.size);
       ocrConfidence = 1;
-      ocrGrid = null;
+      // exact：向量座標沒有歪斜，buildTable 不必找角度（找不到線也一樣）
+      ocrGrid = { v: [], h: [], exact: true };
+      try { ocrGrid = { ...ocrGrid, ...await textLayerGrid(words, pendingText) }; } catch (err) { /* 格線只是輔助 */ }
       lastStructure = null;
       fromTextLayer = true;
-      pendingText = null;
+      // 對照用的底圖：文字座標與頁面圖同一套（先前若跑過 OCR，底圖已被換成轉正後的縮圖）
+      try { ocrPreview?.close?.(); } catch (e) { /* 忽略 */ }
+      ocrPreview = null;
+      ocrPreviewScale = 1;
+      if (pendingText.blob) {
+        try { ocrPreview = await createImageBitmap(pendingText.blob); } catch (e) { /* 沒有底圖就用列表 */ }
+      }
     } else {
       words = await ocrWords(currentFile, quad);
       structured = lastStructure;
@@ -1884,7 +1976,15 @@ async function analyzeImage() {
     const vLines = (ocrGrid?.v || []).length, hLines = (ocrGrid?.h || []).length;
     lastGridWeak = vLines < 3 || hLines < 3;
     const textLayerNote = fromTextLayer
-      ? `　📄 本頁取自 <strong>PDF 文字層</strong>（向量文字，未經 OCR 辨識，內容就是原檔的字）。`
+      ? (pendingText?.suspect
+        ? `　⚠️ 本頁取自 <strong>PDF 文字層</strong>，但這個文字層${pendingText.suspect}，請逐格核對。`
+        : `　📄 本頁取自 <strong>PDF 文字層</strong>（向量文字，未經 OCR 辨識，內容就是原檔的字）。`)
+        + ' <button class="btn btn-outline btn-sm" onclick="setTextLayer(false)">改用 OCR 辨識</button>　'
+      : '';
+    // 這一頁有文字層但沒用（可疑而自動略過，或使用者自己切到 OCR）：說明原因、給回頭路
+    const layerSkipNote = pendingText && !fromTextLayer
+      ? `　📄 這一頁有 PDF 文字層${pendingText.suspect ? `，但${pendingText.suspect}，已改用 OCR` : '，目前用 OCR 辨識'}。`
+        + ' <button class="btn btn-outline btn-sm" onclick="setTextLayer(true)">改用文字層</button>'
       : '';
     const gridNote = lastGridWeak
       ? (structured
@@ -1903,14 +2003,14 @@ async function analyzeImage() {
       ? {
         kind: 'warn',
         text: scannedPdfPage
-          ? `⚠️ 這一頁是<strong>掃描影像</strong>（沒有文字層），以 ${tierLabel} 模型辨識（信心 ${Math.round(ocrConfidence * 100)}%），解析度偏低時數字容易錯。<strong>建議</strong>：改用單頁高解析截圖，或先確認原檔有沒有電子版。${size}。${lowNote}${fixNote}${retryBtn}${gridNote}`
-          : `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}${fixNote}${retryBtn}${gridNote}`,
+          ? `⚠️ 這一頁是<strong>掃描影像</strong>（沒有文字層），以 ${tierLabel} 模型辨識（信心 ${Math.round(ocrConfidence * 100)}%），解析度偏低時數字容易錯。<strong>建議</strong>：改用單頁高解析截圖，或先確認原檔有沒有電子版。${size}。${lowNote}${fixNote}${retryBtn}${gridNote}${layerSkipNote}`
+          : `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}${fixNote}${retryBtn}${gridNote}${layerSkipNote}`,
       }
       : fromTextLayer
         ? { kind: 'info', text: `讀取完成 — ${size}。${textLayerNote}${fixNote}請點擊欄號或列號進行驗算。` }
         : lastGridWeak
-          ? { kind: 'warn', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}${gridNote}${retryBtn}` }
-          : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}` });
+          ? { kind: 'warn', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}${gridNote}${retryBtn}${layerSkipNote}` }
+          : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}${layerSkipNote}` });
     renderTable();
     reviewPos = -1;
     renderReviewButton();

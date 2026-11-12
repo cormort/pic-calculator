@@ -811,6 +811,27 @@ self.onmessage = async (event) => {
       self.postMessage({ type: 'detect-result', id, quad, backend: { layout: layoutBackend() } });
       return;
     }
+    if (msg.type === 'grid') {
+      // PDF 文字層用：字已經有了，只要格線。不載 OCR 模型，只裁出 box 範圍找線
+      // （detectLines 要求線貫穿大半張圖，所以要先裁到表格附近）
+      const bitmap = await decodeImage(msg.buffer);
+      let grid = null;
+      try {
+        const { x, y, w, h } = msg.box;
+        const c = new OffscreenCanvas(w, h);
+        const g = c.getContext('2d', { willReadFrequently: true });
+        g.drawImage(bitmap, x, y, w, h, 0, 0, w, h);
+        const rgba = g.getImageData(0, 0, w, h).data;
+        const gray = new Uint8Array(w * h);
+        for (let i = 0; i < gray.length; i++) {
+          gray[i] = rgba[i * 4] * 0.299 + rgba[i * 4 + 1] * 0.587 + rgba[i * 4 + 2] * 0.114;
+        }
+        const lineGray = normalizeForLines(gray, w, h);
+        grid = { v: detectLines(lineGray, w, h, true), h: detectLines(lineGray, w, h, false) };
+      } finally { bitmap.close(); }
+      self.postMessage({ type: 'grid-result', id, grid });
+      return;
+    }
     if (msg.type !== 'ocr') return;
 
     const svc = await ensureService(msg.quality);

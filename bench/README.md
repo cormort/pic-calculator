@@ -59,6 +59,13 @@ node bench/compare.js out/probe.json --set=probe
 實測格級／數字格 **100%**。沒有文字層的掃描 PDF 會自動退回 OCR（`/tmp/scanned.pdf` 那種）。
 用瀏覽器手動驗：選這個 PDF → 摘要應該出現「本頁取自 PDF 文字層」。
 
+文字層路徑也會借 Worker 找格線（不載 OCR 模型），所以標題列會被丟掉、結果與 truth 完全相同（13×5）。
+調整框選後重新辨識仍走文字層；摘要上的「改用 OCR 辨識／改用文字層」可手動切換。
+
+`probe/shots/scan-hidden-text.pdf` 是「可搜尋的掃描 PDF」（整頁一張圖＋不可見的 OCR 文字層，
+數字故意全寫成 999），由 `python3 bench/make_hidden_text_pdf.py` 產生。App 應該**不採用**這個文字層、
+自動改走 OCR：摘要出現「隱藏 OCR 文字」，表格裡不該有 999。
+
 批次流程（多張圖佇列、狀態晶片、換張還原、批次總表與 CSV）也有回歸腳本（需要模型，約 1–2 分鐘）：
 
 ```bash

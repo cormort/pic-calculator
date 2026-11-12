@@ -5,6 +5,7 @@ node tests/test_build_table.js   # 空白帶切欄、每格信心、Shift 連續
 node tests/test_smart_totals.js  # 智慧合計候選算法與 OCR 標籤修正
 node tests/test_template.js      # 沿用上一張的驗算設定
 node tests/test_lines.js         # 格線偵測（ocr-worker.js）合成影像
+node tests/test_pdf_text.js      # PDF 文字層：座標換算、空白切欄、亂碼與隱藏 OCR 層判斷
 ```
 
 測試會直接從 `pic-calculator/static/index.html` 抽出純函式，
