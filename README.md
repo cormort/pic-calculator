@@ -94,6 +94,7 @@ OCR 信心值可不可信？
 ```bash
 node tests/test_build_table.js   # 切欄切列、跨格線拆框、數字整理、欄列角色
 node tests/test_smart_totals.js  # 智慧合計、看不懂的數字格、被截斷的合計標籤
+node tests/test_template.js      # 沿用上一張的驗算設定（欄數／表頭比對）
 ```
 
 本機預覽（靜態檔，無需建置）：

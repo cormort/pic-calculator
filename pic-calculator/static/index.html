@@ -352,6 +352,7 @@
     <!-- 摘要 -->
     <div id="summary"></div>
     <div id="smart-note" style="display:none;"></div>
+    <div id="template-note" style="display:none;"></div>
 
     <!-- 控制面板 -->
     <div class="card">
@@ -368,7 +369,8 @@
           <span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → <span style="color:var(--target);font-weight:700">＝</span> 合計（每個方向一個）。
           同一個角色再點一次就取消；選錯直接點對的角色即可。選到的欄／列會列在托盤上，<strong>點 chip 就能取消</strong>。<br>
           <strong>連續選取</strong>：Shift＋點可一次選一整段（手機可先在托盤選「加項」再逐欄點）。<br>
-          <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。
+          <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。<br>
+          <strong>連續處理同格式表格</strong>：下一張會自動沿用這一張的欄／列設定（欄數、表頭相同才套用）。
         </div>
       </div>
     </div>
@@ -464,7 +466,7 @@ const Validator = {
         this._vManual({ sheetData, sColIdx, maxCol, selectedIndices, selectedSigns });
         break;
     }
-    return { errorCount: this.errors.size, errors: this.errors,
+    return { errorCount: Array.from(this.errors.values()).filter(e => !e.ok).length, errors: this.errors,
       errorList: Array.from(this.errors.values()),
       totalDiff: Array.from(this.errors.values()).filter(e => !e.ok).reduce((s, e) => s + e.diff, 0) };
   },
@@ -986,7 +988,7 @@ function splitBoxAtLine(w, vLines) {
    實拍最常見的兩種錯：逗號被讀成句點（25,000 → 25.000）、O 被讀成 0。
    前者會讓 parseFloat 得到 25（整張表差一千倍），一定要在驗算前修掉。 */
 const FULLWIDTH_MAP = { '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9',
-  '．':'.','，':',','－':'-','（':'(','）':')','％':'%','　':' ','－':'-','＋':'+','／':'/','：':':' };
+  '．':'.','，':',','－':'-','（':'(','）':')','％':'%','　':' ','＋':'+','／':'/','：':':' };
 const MINUS_VARIANTS = /[−–—﹣－‒]/g;
 const CONFUSABLES = { 'O':'0','o':'0','〇':'0','D':'0','Q':'0', 'l':'1','I':'1','|':'1','i':'1', 'S':'5','s':'5',
   'B':'8', 'Z':'2','z':'2', 'G':'6', 'q':'9','g':'9', 'T':'7' };
@@ -1330,6 +1332,7 @@ async function analyzeImage() {
     }
     const built = buildTable(await ocrWords(currentFile, quad), ocrGrid);
     const repaired = repairNumericCells(built.data, built.confidence);
+    rememberTemplate();   // 換表之前先記下上一張的驗算設定
     tableData = repaired.data;
     cellConfidence = built.confidence;
     cellRepairs = new Map(repaired.repairs.map(x => [x.r + ',' + x.c, x]));
@@ -1352,7 +1355,9 @@ async function analyzeImage() {
     reviewPos = -1;
     renderReviewButton();
     runSmartTotals(true);
+    applyTemplate();
   } catch (err) {
+    document.getElementById('template-note').style.display = 'none';
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
     ws.style.display = 'block';
   } finally {
@@ -1366,6 +1371,7 @@ async function analyzeImage() {
 }
 
 function resetAll() {
+  rememberTemplate();   // 「重新辨識」通常就是要換下一張：設定先記下來
   document.getElementById('preview-wrap').style.display = 'none';
   document.getElementById('workspace').style.display = 'none';
   document.getElementById('file-input').value = '';
@@ -1612,6 +1618,7 @@ function renderSelectionTray() {
 }
 
 function clearSelections() {
+  document.getElementById('template-note').style.display = 'none';
   sel.col = { plus: [], minus: [], total: null };
   sel.row = { plus: [], minus: [], total: null };
   Validator.errors.clear();
@@ -1809,6 +1816,126 @@ function renderSmartNote() {
   el.className = 'summary-banner ' + kind;
   el.innerHTML = `<div>${html}${extra.join('')}</div>`;
   el.style.display = 'flex';
+}
+
+/* =============================================================
+   沿用上一張的驗算設定（同格式表格連續處理）
+   ============================================================= */
+// 只記「怎麼驗」：欄角色記欄號；列角色與手動合計列記標籤（每張列數不同，列號不能沿用）。
+// 套用前一定先比對欄數與表頭：OCR 多切或少切一欄時「欄4」已不是原本那一欄，
+// 盲目套用會產生最危險的結果 —— 錯了卻顯示驗算正確。
+let lastTemplate = null;
+const rowLabelOf = row => SmartTotals.rowLabel(row, Validator._num);
+
+function squashLabel(s) {
+  return String(s ?? '').replace(/\s+/g, '');
+}
+
+// 表頭比對時忽略數字：年度、月份每張不同（「113年1月實支」→「年月實支」）
+function templateKey(s) {
+  return String(s ?? '').replace(/[\s\d]+/g, '');
+}
+
+function makeTemplate(table, selection, totalRows, labelOf) {
+  const label = r => squashLabel(labelOf(table[r]));
+  const size = k => k.plus.length + k.minus.length + (k.total !== null ? 1 : 0);
+  const { col, row } = selection;
+  const totals = [...totalRows].map(label).filter(Boolean);
+  if (!size(col) && !size(row) && !totals.length) return null;
+  return {
+    ncols: Math.max(0, ...table.map(r => r.length)),
+    header: (table[0] || []).map(templateKey),
+    col: size(col) ? { plus: [...col.plus], minus: [...col.minus], total: col.total } : null,
+    row: size(row) ? { plus: row.plus.map(label), minus: row.minus.map(label),
+      total: row.total !== null ? label(row.total) : null } : null,
+    totals,
+  };
+}
+
+function matchTemplate(tpl, table, labelOf) {
+  const ncols = Math.max(0, ...table.map(r => r.length));
+  if (ncols !== tpl.ncols) return { ok: false, reason: `欄數不同（上一張 ${tpl.ncols} 欄、這張 ${ncols} 欄）` };
+  const header = (table[0] || []).map(templateKey);
+  const filled = Math.max(header.filter(Boolean).length, tpl.header.filter(Boolean).length);
+  const same = header.filter((h, c) => h && h === tpl.header[c]).length;
+  if (!filled || same / filled < 0.6) return { ok: false, reason: '表頭不同' };
+  // 列依標籤找：找不到或有兩列同名都不算（猜錯列比不套用更糟）
+  const labels = table.map(r => squashLabel(labelOf(r)));
+  const find = l => {
+    const i = l ? labels.indexOf(l) : -1;
+    return i >= 0 && labels.indexOf(l, i + 1) < 0 ? i : -1;
+  };
+  let row = null, rowSkipped = false;
+  if (tpl.row) {
+    const plus = tpl.row.plus.map(find), minus = tpl.row.minus.map(find);
+    const total = tpl.row.total === null ? null : find(tpl.row.total);
+    if ([...plus, ...minus, total ?? 0].every(i => i >= 0)) row = { plus, minus, total };
+    else rowSkipped = true;
+  }
+  const col = tpl.col && { plus: [...tpl.col.plus], minus: [...tpl.col.minus], total: tpl.col.total };
+  const totals = labels.flatMap((l, r) => l && tpl.totals.includes(l) ? [r] : []);
+  return { ok: true, col, row, rowSkipped, totals };
+}
+
+// 換下一張之前呼叫；這張沒設定任何東西時保留更早那一張的
+function rememberTemplate() {
+  if (!tableData.length) return;
+  lastTemplate = makeTemplate(tableData, sel, manualTotalRows, rowLabelOf) || lastTemplate;
+}
+
+function describeRoles(kind, k) {
+  const n = i => (kind === 'col' ? '欄' : '列') + (i + 1);
+  return [...k.plus.map(i => '＋' + n(i)), ...k.minus.map(i => '−' + n(i))].join('').replace(/^＋/, '')
+    + (k.total !== null ? '＝' + n(k.total) : '');
+}
+
+function applyTemplate() {
+  const el = document.getElementById('template-note');
+  el.style.display = 'none';
+  if (!lastTemplate) return;
+  const m = matchTemplate(lastTemplate, tableData, rowLabelOf);
+  let html, kind = 'info';
+  if (!m.ok) {
+    kind = 'warn';
+    html = `上一張的驗算設定沒有沿用：${m.reason}。請重新點欄號／列號。`;
+  } else {
+    m.totals.forEach(r => manualTotalRows.add(r));
+    if (m.col || m.row) {
+      // 驗算摘要會蓋掉「辨識完成／圖片模糊」的提醒，兩條都留著
+      const summary = document.getElementById('summary'), before = summary.innerHTML;
+      clearSmart();
+      sel.col = m.col || { plus: [], minus: [], total: null };
+      sel.row = m.row || { plus: [], minus: [], total: null };
+      afterSelectionChange();
+      if (summary.innerHTML !== before) summary.innerHTML = before + summary.innerHTML;
+    } else if (m.totals.length) {
+      runSmartTotals(true);
+    }
+    const parts = [];
+    if (m.col) parts.push(describeRoles('col', m.col));
+    if (m.row) parts.push(describeRoles('row', m.row));
+    if (m.totals.length) parts.push('合計列 ' + m.totals.map(r => `第 ${r + 1} 列`).join('、'));
+    const skipped = m.rowSkipped ? '列的設定因科目名稱對不上，沒有沿用。' : '';
+    if (!parts.length) {
+      if (!skipped) return;
+      kind = 'warn';
+      html = skipped + '請重新點列號。';
+    } else {
+      html = `🔁 已沿用上一張的驗算設定：${parts.join('；')}。${skipped}`
+        + ' <button class="btn btn-ghost btn-sm" onclick="discardTemplate()">不要沿用</button>';
+    }
+  }
+  el.className = 'summary-banner ' + kind;
+  el.innerHTML = html;
+  el.style.display = 'flex';
+}
+
+function discardTemplate() {
+  lastTemplate = null;
+  manualTotalRows.clear();
+  document.getElementById('template-note').style.display = 'none';
+  runSmartTotals(true);   // 會一併清掉欄列選取與驗算結果
+  renderSummary({ kind: 'info', text: '已取消沿用的設定，改回智慧合計。' });
 }
 
 /* =============================================================
