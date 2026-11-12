@@ -379,7 +379,7 @@
       <select id="ocr-quality" onchange="setOcrQuality(this.value)">
         <option value="tiny">快速（約 6MB）</option>
         <option value="small">標準（約 30MB）</option>
-        <option value="medium">高精度（約 139MB，較慢）</option>
+        <option value="medium">高精度（約 139MB，較慢；實測金額位數較易漏讀）</option>
       </select>
       <span id="quality-note" class="note">標準：密集表格／一般拍照</span>
       <label class="note" style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;">
@@ -1084,7 +1084,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v17';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v19';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1191,7 +1191,7 @@ function setOcrQuality(q) {
   const suffix = tableData.length ? '；請按「辨識表格」套用' : '';
   if (note) note.textContent = (q === 'tiny' ? '最快；適合清楚截圖'
     : q === 'small' ? '密集表格／一般拍照（建議）'
-    : '小字、低光、難拍照片（較慢）') + suffix;
+    : '小字、低光、難拍照片（較慢）。實測：這顆模型在金額位數上反而更容易漏讀，先用標準模型試') + suffix;
   const st = document.getElementById('spinner-text');
   if (st) st.textContent = `已切換為${OCR_QUALITY_INFO[q].label}模型，下次辨識會載入（約 ${OCR_QUALITY_INFO[q].size}）…`;
 }

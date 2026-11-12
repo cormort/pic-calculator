@@ -391,9 +391,9 @@ function cropCanvas(canvas, x1, y1, x2, y2, scale = 2) {
   return c;
 }
 
-async function recCrop(svc, canvas, x1, y1, x2, y2) {
+async function recCrop(svc, canvas, x1, y1, x2, y2, scales = [2, 1]) {
   let best = null;
-  for (const scale of [2, 1]) {
+  for (const scale of scales) {
     const res = await svc.recognize(cropCanvas(canvas, x1, y1, x2, y2, scale), {
       flatten: true, minimumConfidence: 0, strategy: 'per-box',
     });
@@ -426,6 +426,34 @@ function geometricSplit(text, frac) {
   }
   if (idx <= 0 || idx >= text.length) return null;
   return [text.slice(0, idx), text.slice(idx)];
+}
+
+/* 信心偏低的字框，裁切放大後重辨識一次（預算 12 次）。
+ * 只處理「原本就認得、但信心很低」的框；補救切出來的碎片不再重跑（它們已經重辨識過）。 */
+async function reOcrWeakWords(canvas, results, svc) {
+  const out = [];
+  let budget = 12;
+  for (const r of results) {
+    // 只救「短片段」（單一個字／單一數字最容易讀錯，例如 1→人、1→二）；
+    // 長字串重跑的風險是「主持人費3」這種多出一個字的結果，得不償失（實測）
+    const weak = r.confidence < 0.6 && r.text.trim().length <= 3 && !r.rescued && budget > 0;
+    if (!weak) { out.push(r); continue; }
+    budget--;
+    const pad = Math.max(2, r.box.height * 0.12);
+    let hit = null;
+    try {
+      hit = await recCrop(svc, canvas,
+        r.box.x - pad, r.box.y - pad,
+        r.box.x + r.box.width + pad, r.box.y + r.box.height + pad, [3, 2]);
+    } catch (err) { /* 失敗就用原結果 */ }
+    // 只有「明顯更有把握、而且不是空白」才換掉原本的字
+    if (hit?.text?.trim() && hit.confidence > r.confidence + 0.15 && hit.text.trim().length <= 3) {
+      out.push({ ...r, text: hit.text, confidence: hit.confidence, reOcr: true });
+    } else {
+      out.push(r);
+    }
+  }
+  return out;
 }
 
 async function splitStraddling(canvas, results, grid, svc) {
@@ -463,8 +491,8 @@ async function splitStraddling(canvas, results, grid, svc) {
     const fracNow = (x - r.box.x) / Math.max(1, r.box.width);
     // 代號本身就是數字（「1人事費」的 1、項次欄的 2），所以不能沿用「整格是數字就不拆」那條
     if (codeSplit && Math.abs(fracNow - codeFrac) < 0.45) {
-      out.push({ ...r, text: codeSplit[1], box: { ...r.box, width: x - r.box.x } },
-        { ...r, text: codeSplit[2], box: { ...r.box, x, width: r.box.x + r.box.width - x } });
+      out.push({ ...r, text: codeSplit[1], rescued: true, box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: codeSplit[2], rescued: true, box: { ...r.box, x, width: r.box.x + r.box.width - x } });
       continue;
     }
     // 先用字寬比例快速切一次：像「1-1主 → 1-1 ／ 主」這種看得出來的，
@@ -472,8 +500,8 @@ async function splitStraddling(canvas, results, grid, svc) {
     const frac = (x - r.box.x) / Math.max(1, r.box.width);
     const cheap = geometricSplit(r.text, frac);
     if (cheap && /^[\dA-Za-z\-.,()\/]+$/.test(cheap[0]) && cheap[0].length <= 6) {
-      out.push({ ...r, text: cheap[0], box: { ...r.box, width: x - r.box.x } },
-        { ...r, text: cheap[1], box: { ...r.box, x, width: r.box.x + r.box.width - x } });
+      out.push({ ...r, text: cheap[0], rescued: true, box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: cheap[1], rescued: true, box: { ...r.box, x, width: r.box.x + r.box.width - x } });
       continue;
     }
     // 這裡刻意「每一框都補救」，不依「這一列字框數夠不夠」省略：
@@ -507,9 +535,9 @@ async function splitStraddling(canvas, results, grid, svc) {
     if (L.length === 1 && CJK_G.test(L) && CJK_G.test(R[0])) { out.push(r); continue; }
 
     out.push(
-      { ...r, text: left?.text || L, confidence: left?.confidence ?? r.confidence,
+      { ...r, text: left?.text || L, confidence: left?.confidence ?? r.confidence, rescued: true,
         box: { ...r.box, width: x - r.box.x } },
-      { ...r, text: right?.text || R, confidence: right?.confidence ?? r.confidence,
+      { ...r, text: right?.text || R, confidence: right?.confidence ?? r.confidence, rescued: true,
         box: { ...r.box, x, width: r.box.x + r.box.width - x } },
     );
   }
@@ -576,6 +604,8 @@ self.onmessage = async (event) => {
     // 跨格線的字框先切開重辨識，後面的切欄才不會從這裡歪掉
     let words = res.results;
     try { words = await splitStraddling(canvas, res.results, grid, svc); } catch (err) { /* 補救失敗就用原結果 */ }
+    // 認得但很沒把握的字（單一個「1」被讀成「人」這種），放大後再認一次
+    try { words = await reOcrWeakWords(canvas, words, svc); } catch (err) { /* 失敗就用原結果 */ }
     const confidence = words.length
       ? words.reduce((a, r) => a + r.confidence, 0) / words.length
       : 1;

@@ -1,0 +1,35 @@
+{
+ "generatedAt": "2026-11-12",
+ "quality": "small",
+ "fixtures": {
+  "a-clean.png": {
+   "cells": 100,
+   "numbers": 100
+  },
+  "b-photo.jpg": {
+   "cells": 95.4,
+   "numbers": 96.2
+  },
+  "c-lowres.jpg": {
+   "cells": 96.9,
+   "numbers": 92.3
+  },
+  "d-balance.png": {
+   "cells": 98.3,
+   "numbers": 100
+  },
+  "e-balance-photo.jpg": {
+   "cells": 91.7,
+   "numbers": 86.7
+  },
+  "f-tilted.jpg": {
+   "cells": 95.4,
+   "numbers": 96.2
+  }
+ },
+ "total": {
+  "cells": 96.3,
+  "numbers": 95.1,
+  "cellCount": 380
+ }
+}
