@@ -31,6 +31,9 @@ const EXPECT = [
   const fails = [];
 
   await page.goto(BASE, { waitUntil: "load" });
+  // 等頁面程式跑完再開始（腳本在 body 末端，元素出現時函式可能還沒定義）
+  await page.waitForFunction(() => typeof renderPdfPage === "function" && typeof loadFile === "function",
+    undefined, { timeout: 60000 });
   await page.waitForSelector("#file-input", { state: "attached" });
   await page.evaluate(() => { try { localStorage.setItem("pcAutoAnalyze", "1"); } catch (e) {} });
   await page.reload({ waitUntil: "load" });

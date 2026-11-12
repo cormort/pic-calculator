@@ -65,7 +65,9 @@ const CASES = [
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   await page.goto(BASE, { waitUntil: "load" });
-  await page.waitForSelector("#paste-input", { state: "attached" });
+  // 等「頁面的程式真的跑完」：腳本在 body 末端，#paste-input 出現時函式可能還沒定義
+  await page.waitForFunction(() => typeof applyPastedText === "function" && typeof tableData !== "undefined",
+    undefined, { timeout: 60000 });
 
   const fails = [];
   for (const c of CASES) {
