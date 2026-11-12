@@ -2114,6 +2114,30 @@ function showCellPeek(r, c) {
   note.textContent = `第 ${r + 1} 列／第 ${c + 1} 欄：「${text}」` + (scale > 1.15 ? `　放大 ${scale.toFixed(1)}×` : '');
   panel.style.display = 'block';
   peekKey = r + ',' + c;
+  positionCellPeek();
+}
+
+/* 手機：螢幕鍵盤（輸入法）打開時，貼在畫面底部的 fixed 面板會被鍵盤蓋住。
+ * 改用「看得到的範圍」（visualViewport）定位，並放在正在編輯那一格的另一側：
+ * 格子在下半部 → 面板放上面；格子在上半部 → 面板放鍵盤正上方。桌機維持右下角。 */
+function positionCellPeek() {
+  const panel = document.getElementById('cell-peek');
+  if (!panel || panel.style.display === 'none') return;
+  const vv = window.visualViewport;
+  if (!vv || !matchMedia('(max-width: 600px)').matches) { panel.style.top = panel.style.bottom = ''; return; }
+  const [r, c] = peekKey.split(',');
+  const td = document.querySelector(`#data-table td[data-r="${r}"][data-c="${c}"]`);
+  const top = vv.offsetTop, bottom = vv.offsetTop + vv.height;   // 看得到的範圍（與 fixed 同一座標系）
+  const rect = td?.getBoundingClientRect();
+  const cellMid = rect ? (rect.top + rect.bottom) / 2 : top;
+  panel.style.bottom = 'auto';
+  panel.style.top = (cellMid > top + vv.height / 2
+    ? top + 8
+    : Math.max(top + 8, bottom - panel.offsetHeight - 8)) + 'px';
+}
+if (window.visualViewport) {
+  visualViewport.addEventListener('resize', positionCellPeek);   // 鍵盤開關
+  visualViewport.addEventListener('scroll', positionCellPeek);
 }
 function hideCellPeek() {
   const panel = document.getElementById('cell-peek');
