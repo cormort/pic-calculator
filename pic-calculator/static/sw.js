@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pic-calc-v44';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
+const CACHE_NAME = 'pic-calc-v49';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
 // 離線需要的殼：安裝時先存好，第一次開啟之後就能離線使用
 const SHELL = ['./', 'index.html', 'smart_total.js', 'ocr-worker.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 // 函式庫與 OCR 模型（CDN，網址帶版本不會變）：快取優先

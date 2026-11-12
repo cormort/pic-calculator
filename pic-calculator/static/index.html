@@ -562,7 +562,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=44"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=49"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -1296,7 +1296,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v44';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v49';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
