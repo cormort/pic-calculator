@@ -707,6 +707,10 @@ const Validator = {
     // 字母夾在數字中間（Q3 2024、2023 vs 2024）就不算數字。
     // ponytail: 「A 100」「ISO 9001」這種短英文＋數字仍會被當成數字；金額欄很少見，遇到再加例外
     s = s.replace(/[√✓✔]/g, ' ').trim();
+    // 手寫勾被讀成「1」「|」「I」時會黏在金額前面（例：'1 NTS 2,353'、'| NT$ 20,000'）。
+    // 只在「後面接著幣別、幣別後面還有數字」時才丟掉這個前導字 ——
+    // 否則「1 件」這種真的以數字開頭的內容會被吃掉
+    s = s.replace(/^[1|Iil]\s*(?=[A-Za-z$]{1,4}\s*\d)/, '').trim();
     const money = s.match(/^([A-Za-z$\s]*?)([-(（]?\s*\d[\d,，.]*(?:[,，.]\s+\d[\d,，.]*)*\s*[)）]?\s*[%％]?)\s*([A-Za-z$元]*)$/);
     // 例外：數字後面「緊黏」的全是長得像數字的字母（2OO、1,0l）是辨識錯，不是幣別 ——
     // 當成 2 會讓驗算悄悄算錯；回傳 NaN 才會被標成「不像數字」請人修正
@@ -1951,7 +1955,10 @@ function isAmountColumn(values) {
   const vals = values.map(v => String(v ?? '').trim())
     .filter(v => v && !NO_VALUE.test(v.replace(/\s/g, '')));
   if (vals.length < 2) return false;
-  const amounts = vals.filter(v => AMOUNT_SHAPE.test(v.replace(/\s/g, '')));
+  // 除了純數字，也要認「幣別＋數字」這種實際 OCR 會吐出來的樣子：
+  // 實拍單欄「總金額」表整欄都是 'NT$ 122,226'、'NTS 12,041'，
+  // 用 AMOUNT_SHAPE 逐字比對會讓整欄不算金額欄 → 連「最後一列是合計」都驗不到
+  const amounts = vals.filter(v => AMOUNT_SHAPE.test(v.replace(/\s/g, '')) || !isNaN(Validator._num(v)));
   return amounts.length >= 2 && amounts.length / vals.length >= 0.6;
 }
 

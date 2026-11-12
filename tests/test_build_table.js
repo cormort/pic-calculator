@@ -33,6 +33,12 @@ assert.strictEqual(Validator._num("JN NT$ 24,900"), 24900);
 assert.strictEqual(Validator._num("NTS 1,170,285"), 1170285);
 assert.strictEqual(Validator._num("√ 9,900"), 9900);
 assert.strictEqual(Validator._num("√ NT$ 833,000"), 833000);
+// 手寫勾被讀成 1 或 | 黏在金額前面（實拍單欄「總金額」表就是這樣）
+assert.strictEqual(Validator._num("1 NTS 2,353"), 2353);
+assert.strictEqual(Validator._num("| NT$ 20,000"), 20000);
+assert.strictEqual(Validator._num("I NTS 1,170,285"), 1170285);
+// 但真的以數字開頭、後面沒有幣別的內容不能被吃掉
+assert.strictEqual(Validator._num("1 件"), NaN);
 assert.ok(isNaN(Validator._num("營業收入")));
 assert.strictEqual(Validator._num("USD 1,200"), 1200);
 assert.strictEqual(Validator._num("NI$ 300"), 300);
