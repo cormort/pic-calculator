@@ -241,6 +241,9 @@
   table.data td.cell-fixed { text-decoration: underline dotted var(--info); text-underline-offset: 4px; }
   /* 數字欄裡看不出是數字的格：紅虛線，並排除在驗算之外 */
   table.data td.cell-bad-num { outline: 2px dashed var(--error); outline-offset: -3px; }
+  /* 合併儲存格（只有表格結構模式會有）：用底色讓人一眼看出它是跨欄/跨列 */
+  table.data td.cell-merged { background: #fbfcff; }
+  table.data td.cell-merged[colspan], table.data td.cell-merged[rowspan] { border-bottom: 2px solid var(--border); }
   table.data td.cell-smart-ok { background: #eafaf1; }
 
   /* 列範圍 */
@@ -1167,6 +1170,7 @@ async function detectTableInWorker(file) {
 }
 
 let lastStructure = null;   // 沒有格線時，表格結構模型算出來的格子
+let cellSpans = [];         // 每格的合併資訊 { rs, cs }；被合併蓋住的格子為 null（只有結構模式會有）
 
 async function ocrWords(file, quad) {
   const info = OCR_QUALITY_INFO[ocrQuality];
@@ -1637,13 +1641,14 @@ async function analyzeImage() {
     const words = await ocrWords(currentFile, quad);
     const structured = lastStructure;
     const built = structured
-      ? { data: structured.grid, confidence: structured.conf, boxes: structured.boxes }
+      ? { data: structured.grid, confidence: structured.conf, boxes: structured.boxes, spans: structured.spans }
       : buildTable(words, ocrGrid);
     const repaired = repairNumericCells(built.data, built.confidence);
     const stripped = stripGarbageText(repaired.data, headerRowCount());
     rememberTemplate();   // 換表之前先記下上一張的驗算設定
     tableData = stripped.data;
     cellBoxes = built.boxes || [];   // 每格在轉正圖上的像素範圍（給原圖對照用）
+    cellSpans = built.spans || [];
     cellConfidence = built.confidence;
     cellRepairs = new Map([...repaired.repairs, ...stripped.repairs].map(x => [x.r + ',' + x.c, x]));
     manualTotalRows.clear();
@@ -1703,6 +1708,7 @@ function resetAll() {
   currentFile = null;
   tableData = [];
   cellConfidence = [];
+  cellSpans = [];
   cellRepairs.clear();
   manualTotalRows.clear();
   smartUnparsed = [];
@@ -1754,6 +1760,8 @@ function renderTable() {
     const rowHeadCls = rowClass(r);
     html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" tabindex="0" role="button" aria-label="第 ${r + 1} 列" onclick="onRowClick(${r}, event)">${r + 1}</td>`;
     for (let c = 0; c < cols; c++) {
+      const span = cellSpans[r]?.[c];
+      if (span === null && cellSpans[r]) continue;   // 被上面的 rowspan／左邊的 colspan 蓋住
       const v = tableData[r][c] ?? '';
       const inCol = c + 1 >= startCol && (!endColVal || c + 1 <= endColVal);
       const conf = cellConfidence[r]?.[c];
@@ -1779,7 +1787,10 @@ function renderTable() {
       const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
       // 數字鍵盤只給數字格；文字格（科目、被截斷的「小」）要能打中文
       const numeric = !String(v).trim() || !isNaN(Validator._num(v)) || unparsed.has(r + ',' + c);
-      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true"${numeric ? ' inputmode="decimal"' : ''}${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
+      let spanAttr = '';
+      if (span && span.rs > 1) spanAttr += ` rowspan="${span.rs}"`;
+      if (span && span.cs > 1) spanAttr += ` colspan="${span.cs}"`;
+      html += `<td class="${cellCls}${span ? ' cell-merged' : ''}" data-r="${r}" data-c="${c}"${spanAttr} contenteditable="true"${numeric ? ' inputmode="decimal"' : ''}${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
     }
     html += '</tr>';
   }

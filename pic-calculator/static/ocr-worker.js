@@ -704,24 +704,43 @@ function structureRows(loc, probs, canvasW, canvasH) {
   return rows.filter((r) => r.length);
 }
 
-/* 依 token 序列的行列位置填字：第 k 格放在「前面各格 colspan 加總」那一欄 */
+/* 把 token 序列排成真正的格子表：colspan 佔多欄、rowspan 佔多列。
+   排列時要「跳過已經被上面列 rowspan 佔走的位置」，否則後面的列會整排左移。 */
 function rowsToTable(rows, words) {
   if (!rows.length) return null;
-  let ncol = 1;
-  for (const row of rows) ncol = Math.max(ncol, row.reduce((s, c) => s + c.colspan, 0));
-  const grid = Array.from({ length: rows.length }, () => new Array(ncol).fill(''));
-  const conf = Array.from({ length: rows.length }, () => new Array(ncol).fill(1));
-  const boxes = Array.from({ length: rows.length }, () => new Array(ncol).fill(null));
-
+  const nrow = rows.length;
+  const occupied = [];                       // occupied[r][c] = true 表示被合併格佔用
   const cells = [];
+  let ncol = 1;
+  const isFree = (r, c) => !(occupied[r] && occupied[r][c]);
+
   rows.forEach((row, r) => {
     let c = 0;
     for (const cell of row) {
-      cells.push({ ...cell, r, c, area: Math.max(1, (cell.x2 - cell.x1) * (cell.y2 - cell.y1)) });
-      boxes[r][c] = { x1: cell.x1, y1: cell.y1, x2: cell.x2, y2: cell.y2 };
-      c += cell.colspan;
+      while (!isFree(r, c)) c++;             // 跳過被 rowspan 佔用的位置
+      const cs = Math.max(1, Math.min(cell.colspan, 20));
+      const rs = Math.max(1, Math.min(cell.rowspan, nrow - r));
+      for (let dr = 0; dr < rs; dr++) {
+        const rr = r + dr;
+        occupied[rr] = occupied[rr] || [];
+        for (let dc = 0; dc < cs; dc++) occupied[rr][c + dc] = true;
+      }
+      cells.push({ ...cell, r, c, colspan: cs, rowspan: rs,
+        area: Math.max(1, (cell.x2 - cell.x1) * (cell.y2 - cell.y1)) });
+      ncol = Math.max(ncol, c + cs);
+      c += cs;
     }
   });
+
+  const grid = Array.from({ length: nrow }, () => new Array(ncol).fill(''));
+  const conf = Array.from({ length: nrow }, () => new Array(ncol).fill(1));
+  const boxes = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
+  const spans = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
+  for (const cell of cells) {
+    spans[cell.r][cell.c] = { rs: cell.rowspan, cs: cell.colspan };
+    boxes[cell.r][cell.c] = { x1: cell.x1, y1: cell.y1, x2: cell.x2, y2: cell.y2 };
+  }
+
   // 合併儲存格面積較大，字框先找「面積最小又包含它」的那一格
   const ordered = [...cells].sort((a, b) => a.area - b.area);
   for (const w of words) {
@@ -730,10 +749,9 @@ function rowsToTable(rows, words) {
       if (w.cx >= cell.x1 && w.cx <= cell.x2 && w.cy >= cell.y1 && w.cy <= cell.y2) { hit = cell; break; }
     }
     // 模型的格子常比實際文字框小一點（尤其最左欄），落在格子外的字不要丟掉 ——
-    // 找最近的格子，距離在「一個字高」以內就收下
+    // 只救「垂直方向還在同一列、只是稍微偏出左右邊界」的字；
+    // 允許垂直偏移會讓隔壁列的字被吸上來（實測併成「1人事費1-1主持人費」）
     if (!hit) {
-      // 只救「垂直方向還在同一列、只是稍微偏出左右邊界」的字；
-      // 允許垂直偏移會讓隔壁列的字被吸上来（實測：「1人事費1-1主持人費」併成一格）
       const ySlack = Math.max(4, (w.h || 20) * 0.25);
       let best = null, bestDx = Infinity;
       for (const cell of cells) {
@@ -748,15 +766,17 @@ function rowsToTable(rows, words) {
     grid[hit.r][hit.c] = grid[hit.r][hit.c] ? grid[hit.r][hit.c] + ' ' + w.text : w.text;
     conf[hit.r][hit.c] = Math.min(conf[hit.r][hit.c], Number.isFinite(w.score) ? w.score : 1);
   }
-  // 去掉整列／整欄都空白的邊界
-  while (grid.length && grid[0].every((t) => !t)) { grid.shift(); conf.shift(); boxes.shift(); }
-  while (grid.length && grid[grid.length - 1].every((t) => !t)) { grid.pop(); conf.pop(); boxes.pop(); }
-  while (ncol > 1 && grid.every((row) => !row[ncol - 1])) {
-    grid.forEach((row) => row.pop()); conf.forEach((row) => row.pop()); boxes.forEach((row) => row.pop());
+  // 去掉頭尾整列／整欄空白（模型偶爾會多吐一列標題或最右邊的細欄）
+  const rowEmpty = (r) => grid[r].every((t) => !t) && spans[r].every((sp) => !sp);
+  const colEmpty = (c) => grid.every((row) => !row[c]) && spans.every((row) => !row[c]);
+  while (grid.length > 1 && rowEmpty(0)) { grid.shift(); conf.shift(); boxes.shift(); spans.shift(); }
+  while (grid.length > 1 && rowEmpty(grid.length - 1)) { grid.pop(); conf.pop(); boxes.pop(); spans.pop(); }
+  while (ncol > 1 && colEmpty(ncol - 1)) {
+    grid.forEach((r) => r.pop()); conf.forEach((r) => r.pop());
+    boxes.forEach((r) => r.pop()); spans.forEach((r) => r.pop());
     ncol--;
   }
-  if (!grid.length) return null;
-  return { grid, conf, boxes, cells: cells.length, rows: grid.length, cols: ncol };
+  return { grid, conf, boxes, spans, cells: cells.length, rows: grid.length, cols: ncol };
 }
 
 async function structureTable(canvas, words) {

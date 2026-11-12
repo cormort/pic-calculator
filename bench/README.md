@@ -55,6 +55,10 @@ node bench/compare.js out/probe.json --set=probe
 | `g-borderless.png` | 只有外框、沒有內部格線 | 27.7% / 數字 0% → **67.7% / 84.6%** | 已接表格結構模型（SLANet）：模型給格子、字框按座標塞進去。剩下的差距是「項次與科目之間連細線都沒有」，模型也把它們併成一格 |
 | `h-title-row.png` | 表格上方多一列跨欄標題 | 98.5% / 100% | 標題列已能正確排除，只剩 `小計`→`小吉` 的辨識錯 |
 
+合併儲存格（`colspan`／`rowspan`）沒有放進 probe：模型的合併猜測每次可能不同，
+逐格對答案不穩定。排列與渲染改由 `tests/test_structure_table.js` 用合成資料直接驗
+（跨列不會讓後面的列左移、跨欄會留空欄、同時跨欄跨列也對）。
+
 要把 borderless 救回來，得靠「表格結構」模型（例如 PaddleOCR 的 SLANet，ONNX 約 7.7MB，
 MIT 授權），而不是再調切欄規則 —— 它能直接預測「哪個字屬於哪一格」。
 
