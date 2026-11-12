@@ -214,5 +214,16 @@ assert.deepStrictEqual(repCol.data[1], ["25,000"]);
 // 沒有同欄證據時不要亂改（可能真的是小數）
 const repKeep = repairCells([["單價"], ["25.000"], ["12.5"]], null);
 assert.strictEqual(repKeep.data[1][0], "25.000");
+// 小數尾端的 0 要保留：「1.50」不該被當成「已自動整理」改成「1.5」
+const repDec = repairCells([["單價"], ["1.50"], ["12,345.60"]], null);
+assert.deepStrictEqual(repDec.data.slice(1), [["1.50"], ["12,345.60"]]);
+assert.strictEqual(repDec.repairs.length, 0);
+
+// 每個 inline 事件（onclick="foo(…)"）呼叫的函式都要存在：
+// 曾經在重構時誤刪 onCellEdit，格子改了卻不寫回、不重算，也沒有任何錯誤提示
+const handlers = new Set([...html.matchAll(/\son\w+="(\w+)\(/g)].map((m) => m[1]));
+for (const fn of handlers) {
+  assert.ok(new RegExp(`function ${fn}\\(`).test(html), `inline handler ${fn}() 未定義`);
+}
 
 console.log("PASS  frontend buildTable / confidence / range selection / numeric repair");

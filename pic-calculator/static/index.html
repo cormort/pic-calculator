@@ -1052,8 +1052,9 @@ function repairNumericCells(data, confidence) {
         const body = s.replace(/[,$ ]/g, '');
         if (/^-?\d+(\.\d+)?$/.test(body)) {
           const dec = (body.split('.')[1] || '').length;
-          s = n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: Math.min(dec, 4) });
-          if (dec > 0 && !s.includes('.')) s += '.' + '0'.repeat(dec);
+          // 小數位數照原樣（1.50 不變成 1.5、1.23456 不被四捨五入），只補千分位
+          const digits = Math.min(dec, 20);
+          s = n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
         }
       }
       if (s !== orig) {
@@ -1403,6 +1404,7 @@ function renderTable() {
   const startCol = startColEl ? (parseInt(startColEl.value) || 1) : 1;
   const endColVal = endColEl ? (parseInt(endColEl.value) || 0) : 0;
 
+  const unparsed = new Set(smartUnparsed.map(u => u.r + ',' + u.c));
   let html = '<thead><tr><th class="row-head">列＼欄</th>';
   for (let c = 0; c < cols; c++) {
     const cls = colClass(c);
@@ -1411,9 +1413,7 @@ function renderTable() {
   html += '</tr></thead><tbody>';
 
   for (let r = 0; r < tableData.length; r++) {
-    const inEndRow = !endRowVal || r < endRowVal;
-    const inStartRow = r >= 0;
-    const rowOut = !inEndRow || !inStartRow;
+    const rowOut = endRowVal > 0 && r >= endRowVal;
     const rcls = rowOut ? 'row-out' : '';
     const rowHeadCls = rowClass(r);
     html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" tabindex="0" role="button" aria-label="第 ${r + 1} 列" onclick="onRowClick(${r}, event)">${r + 1}</td>`;
@@ -1435,13 +1435,15 @@ function renderTable() {
       const errMsg = Validator.errMsg(r, c);
       if (errMsg) titles.push(errMsg);
       if (low) titles.push(`OCR 信心 ${Math.round(conf * 100)}%，建議核對`);
-      const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
       if (fix) cellCls += ' cell-fixed';
-      if (smartUnparsed.some(u => u.r === r && u.c === c)) {
+      if (unparsed.has(r + ',' + c)) {
         cellCls += ' cell-bad-num';
         titles.push('這格不像數字，沒有列入驗算 — 請修正');
       }
-      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true" inputmode="decimal"${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
+      const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
+      // 數字鍵盤只給數字格；文字格（科目、被截斷的「小」）要能打中文
+      const numeric = !String(v).trim() || !isNaN(Validator._num(v)) || unparsed.has(r + ',' + c);
+      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true"${numeric ? ' inputmode="decimal"' : ''}${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
     }
     html += '</tr>';
   }
@@ -1559,6 +1561,31 @@ function afterSelectionChange() {
   if (hadResult) {
     renderSummary({ kind: 'info', text: '已取消選取。至少要有「1 個加項 ＋ 1 個合計」才會驗算。' });
   }
+}
+
+// 格子編輯完（blur）：寫回 tableData 並重新驗算
+function onCellEdit(td) {
+  const r = +td.dataset.r, c = +td.dataset.c;
+  const newVal = td.innerText.trim();
+  // 只點進去沒改內容：不重繪（否則下一下點擊的目標會被換掉）、不清驗算結果與低信心標示
+  if (newVal === String(tableData[r]?.[c] ?? '')) return;
+  while (tableData[r].length <= c) tableData[r].push('');
+  tableData[r][c] = newVal;
+  if (!cellConfidence[r]) cellConfidence[r] = [];
+  while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
+  cellConfidence[r][c] = 1;   // 人工確認過，不再算低信心
+  cellRepairs.delete(r + ',' + c);   // 人工改過，「原辨識」的提示已不適用
+  // 手打的整數也補千分位（25000 → 25,000），跟 OCR 結果和驗算的顯示一致
+  const plain = newVal.replace(/\s/g, '');
+  if (/^-?\d{4,}(\.\d+)?$/.test(plain)) {
+    const n = Validator._num(plain);
+    if (!isNaN(n)) { tableData[r][c] = n.toLocaleString('en-US', { maximumFractionDigits: 20 }); td.innerText = tableData[r][c]; }
+  }
+  renderReviewButton();
+  if (smartActive) { runSmartTotals(); return; }
+  smartUnparsed = unparsedNumericCells(tableData);   // 修好的格子不再標成「不像數字」
+  // 編輯後依目前選取重新驗算，摘要與錯誤清單才會跟表格一致
+  afterSelectionChange();
 }
 
 // 選取托盤：把「目前選了什麼」畫出來，點 chip 就取消該欄/列

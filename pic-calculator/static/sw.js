@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pic-calc-v5';
+const CACHE_NAME = 'pic-calc-v6';
 // 離線需要的殼：安裝時先存好，第一次開啟之後就能離線使用
 const SHELL = ['./', 'index.html', 'smart_total.js', 'ocr-worker.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 // 函式庫與 OCR 模型（CDN，網址帶版本不會變）：快取優先
@@ -32,6 +32,6 @@ self.addEventListener('fetch', event => {
     const save = resp => { if (resp.ok) cache.put(req, resp.clone()); return resp; };
     if (cdn) return (await cache.match(req)) || fetch(req).then(save);
     // 頁面與殼：網路優先（更新立即生效），離線才用快取
-    return fetch(req).then(save).catch(() => cache.match(req) || cache.match('index.html'));
+    return fetch(req).then(save).catch(async () => (await cache.match(req)) || cache.match('index.html'));
   }));
 });
