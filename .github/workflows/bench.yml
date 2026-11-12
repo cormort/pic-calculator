@@ -43,6 +43,10 @@ jobs:
       - name: 貼上文字／表格解析
         run: node bench/check_paste.js --base=http://127.0.0.1:8765/
 
+      # 批次流程（佇列、狀態結算、換張還原、總表、CSV）：需要模型，約 1–2 分鐘。
+      - name: 批次流程
+        run: node bench/check_batch.js --base=http://127.0.0.1:8765/
+
       # 混合 PDF（文字頁 → 掃描頁 → 文字頁）：驗逐頁判斷與換頁狀態。
       # if: always() —— 上面那步失敗（模型下載失敗等）也要跑這個，它不依賴模型。
       - name: 混合 PDF 逐頁判斷
