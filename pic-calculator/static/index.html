@@ -150,6 +150,11 @@
   .table-wrap { padding: 8px 8px 16px; overflow: auto; max-height: min(62vh, 620px); }
   @media (max-width: 600px) { .table-wrap { max-height: 54vh; } }
   /* 選取托盤：先選角色，再點欄號／列號 */
+  /* PDF 換頁列 */
+  .pdf-nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin: 10px 0; font-size: .86rem; color: var(--muted); }
+  .pdf-nav .pdf-hint { font-size: .78rem; }
+
   /* 點格子的原圖對照：固定在右下，不擋表格操作 */
   #cell-peek { position: fixed; right: 14px; bottom: 14px; z-index: 40; width: 320px;
     background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
@@ -309,10 +314,18 @@
 <div class="container">
 
   <div class="upload-zone" id="drop-zone">
-    <input type="file" id="file-input" accept="image/*">
+    <input type="file" id="file-input" accept="image/*,application/pdf">
     <div class="up-icon">📷</div>
     <p>拖曳圖片到此，或點擊 <strong>選擇檔案</strong></p>
-    <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP</p>
+    <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP，以及 PDF（逐頁辨識）</p>
+  </div>
+
+  <!-- PDF 換頁：PDF 沒有「一張圖」的概念，要一頁一頁餵給 OCR -->
+  <div id="pdf-nav" class="pdf-nav" style="display:none">
+    <button class="btn btn-outline btn-sm" onclick="renderPdfPage(pdfPage - 1)">◀ 上一頁</button>
+    <span id="pdf-page-info">第 1 / 1 頁</span>
+    <button class="btn btn-outline btn-sm" onclick="renderPdfPage(pdfPage + 1)">下一頁 ▶</button>
+    <span class="pdf-hint">換頁後會自動框選並辨識；匯出的 CSV 檔名會帶頁碼</span>
   </div>
 
   <!-- 手機/平板：直接開原生相機拍照（全解析度、可自動對焦），比網頁內的即時影像清楚得多 -->
@@ -794,7 +807,74 @@ let autoAnalyze = true;
 try { autoAnalyze = localStorage.getItem('pcAutoAnalyze') !== '0'; } catch (err) { /* 忽略 */ }
 let analyzing = false;
 
-function loadFile(file) {
+/* =============================================================
+   PDF：一次只處理一頁（表格結構跨頁拆開會亂），逐頁辨識、逐頁匯出
+   ============================================================= */
+// pdf.js 只在真的選了 PDF 時才下載（PWA 離線使用時不會拖慢啟動）
+const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs';
+const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs';
+let pdfDoc = null, pdfPage = 1, pdfName = '';
+
+function renderPdfNav() {
+  const bar = document.getElementById('pdf-nav');
+  const info = document.getElementById('pdf-page-info');
+  if (!bar) return;
+  bar.style.display = pdfDoc ? 'flex' : 'none';
+  if (info && pdfDoc) info.textContent = `第 ${pdfPage} / ${pdfDoc.numPages} 頁`;
+}
+
+async function openPdf(file) {
+  const hint = document.getElementById('crop-hint');
+  if (hint) hint.textContent = '載入 PDF（第一次需要下載 pdf.js）…';
+  try {
+    const pdfjs = await import(PDFJS_URL);
+    pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+    pdfDoc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+    pdfName = (file.name || 'document.pdf').replace(/\.pdf$/i, '');
+    await renderPdfPage(1);
+  } catch (err) {
+    pdfDoc = null;
+    renderPdfNav();
+    if (hint) hint.textContent = `無法讀取 PDF：${err.message || err}（可先自行截圖）`;
+  }
+}
+
+async function renderPdfPage(n) {
+  if (!pdfDoc) return;
+  const target = Math.min(Math.max(1, n), pdfDoc.numPages);
+  const hint = document.getElementById('crop-hint');
+  if (hint) hint.textContent = `轉換第 ${target} 頁…`;
+  try {
+    const page = await pdfDoc.getPage(target);
+    // 2 倍 ≈ 144dpi 以上，小字才餵得動 OCR；A4 約 1200×1700
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport, background: '#fff' }).promise;
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    pdfPage = target;
+    const pageFile = new File([blob], `${pdfName}-p${target}.png`, { type: 'image/png' });
+    loadFile(pageFile, { fromPdf: true });   // 走原本的預覽 → 自動框選 → 自動辨識
+    renderPdfNav();
+  } catch (err) {
+    if (hint) hint.textContent = `第 ${target} 頁轉換失敗：${err.message || err}`;
+  }
+}
+
+function loadFile(file, opts = {}) {
+  if (file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''))) {
+    openPdf(file);               // 非同步；載入完成後會自己呼叫 loadFile(該頁 PNG)
+    return;
+  }
+  // PDF 轉出來的頁面圖也會走這條路，不能因此把 pdfDoc 清掉（否則換頁列就消失）
+  if (!opts.fromPdf) {
+    pdfDoc = null;               // 選了圖片就離開 PDF 模式
+    renderPdfNav();
+  }
   currentFile = file;
   quadTouched = false;
   setQuad(FULL_QUAD);
