@@ -12,7 +12,11 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
-const TRUTH = path.join(__dirname, "truth");
+const argSet = (() => {
+  const hit = process.argv.find((a) => a.startsWith("--set="));
+  return hit ? hit.slice(6) : "main";
+})();
+const TRUTH = path.join(__dirname, argSet === "probe" ? "probe/truth" : "truth");
 const BASELINE = path.join(__dirname, "baseline.json");
 
 const norm = (s) => String(s ?? "")

@@ -41,6 +41,24 @@ CI 版（`.github/workflows/bench.yml`）每週跑一次，也可以手動 `work
 - **列對齊**：順序保持的動態規劃（Needleman–Wunsch）。表格列序穩定，單點對齊會因為
   一個錯字讓整列對不到、後面每列跟著位移，正確率被重複懲罰。
 
+## 觀察用 probe（已知缺口，不列入基準）
+
+`bench/probe/` 放的是「現在明顯做不好」的案例，用來記錄缺口、驗收未來的修正：
+
+```bash
+node bench/run_ocr.js --set=probe --out=out/probe.json
+node bench/compare.js out/probe.json --set=probe
+```
+
+| 圖 | 情境 | 目前 | 說明 |
+|---|---|---|---|
+| `g-borderless.png` | 只有外框、沒有內部格線 | **23.1% / 數字 0%** | 沒有線就沒有欄界，切欄退回「空白帶猜測」，數字會整批跑到錯的欄。這是**歸屬錯**，不是辨識錯 |
+| `h-title-row.png` | 表格上方多一列跨欄標題 | 98.5% / 100% | 標題列已能正確排除，只剩 `小計`→`小吉` 的辨識錯 |
+
+要把 borderless 救回來，得靠「表格結構」模型（例如 PaddleOCR 的 SLANet，ONNX 約 7.7MB，
+MIT 授權），而不是再調切欄規則 —— 它能直接預測「哪個字屬於哪一格」。
+是否投資這一塊見 README §三。
+
 ## 目前基準
 
 `baseline.json` 是最後一次量測的結果（標準模型）。同機重跑的變動約 ±1–2 個百分點

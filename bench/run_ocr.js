@@ -17,9 +17,12 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 
-const FIXTURES = ["a-clean.png", "b-photo.jpg", "c-lowres.jpg", "d-balance.png", "e-balance-photo.jpg", "f-tilted.jpg"];
 const ROOT = path.join(__dirname, "..");
-const SHOTS = path.join(__dirname, "shots");
+const SET = arg("set", "main");            // main＝正式基準；probe＝已知缺口的觀察用
+const SHOTS = path.join(__dirname, SET === "probe" ? "probe/shots" : "shots");
+const FIXTURES = SET === "probe"
+  ? ["g-borderless.png", "h-title-row.png"]
+  : ["a-clean.png", "b-photo.jpg", "c-lowres.jpg", "d-balance.png", "e-balance-photo.jpg", "f-tilted.jpg"];
 const BASE = arg("base", "http://127.0.0.1:8765/");
 const QUALITY = arg("quality", "small");
 const OUT = path.join(ROOT, arg("out", "out/run.json"));
