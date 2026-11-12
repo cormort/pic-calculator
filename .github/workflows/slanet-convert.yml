@@ -1,0 +1,61 @@
+name: slanet-convert
+
+# 把 PaddleOCR 的表格結構模型（SLANet）轉成 onnxruntime-web 載得進來的 ONNX。
+#
+# 為什麼要在 Linux 跑：本機 macOS + paddle2onnx 2.1 轉出來的圖不合法
+# （無效的純量 Concat／含 Loop 子圖，onnxruntime-web 會拒絕）。
+# 這個 workflow 在 ubuntu-latest 上試兩套工具鏈，成功的那組會上傳 artifact；
+# 拿到之後放進 pic-calculator/static/models/ 就可以開 worker 的「結構模式」。
+on:
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - paddle: "2.6.2"
+            p2o: "1.0.6"
+            label: paddle2onnx-1.0
+          - paddle: "3.3.1"
+            p2o: "2.1.0"
+            label: paddle2onnx-2.1
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安裝 ${{ matrix.label }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install "paddlepaddle==${{ matrix.paddle }}" "paddle2onnx==${{ matrix.p2o }}" \
+                      onnx onnxruntime pillow numpy
+
+      - name: 轉檔並驗收（3×4→15 格、4×4→20 格、不含 Loop）
+        run: |
+          python bench/experiments/convert_slanet.py \
+            --out slanet_plus_${{ matrix.label }}.onnx \
+            --workdir /tmp/slanet_convert | tee convert.log
+
+      - name: 記錄結果
+        if: always()
+        run: |
+          {
+            echo "## SLANet 轉檔（${{ matrix.label }}）"
+            echo '```'
+            tail -20 convert.log || echo "沒有輸出"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: 上傳 ONNX
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slanet-onnx-${{ matrix.label }}
+          path: slanet_plus_*.onnx
+          if-no-files-found: ignore

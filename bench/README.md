@@ -57,7 +57,12 @@ node bench/compare.js out/probe.json --set=probe
 
 要把 borderless 救回來，得靠「表格結構」模型（例如 PaddleOCR 的 SLANet，ONNX 約 7.7MB，
 MIT 授權），而不是再調切欄規則 —— 它能直接預測「哪個字屬於哪一格」。
-是否投資這一塊見 README §三。
+
+模型可行性已驗證（官方 `TableLabelDecode`，3×4 合成表 20/20 格全對），
+但目前卡在「轉出來的 ONNX 在 onnxruntime-web 載不進去」（Loop 子圖／純量 Concat）。
+轉檔與驗收腳本：`bench/experiments/convert_slanet.py`；
+Linux／CI 轉檔：`.github/workflows/slanet-convert.yml`（手動觸發，兩套工具鏈各試一次，
+成功的那組會上傳 ONNX）。完整調查見 `bench/experiments/slanet_probe.py`。
 
 ## 目前基準
 
