@@ -10,8 +10,12 @@ const html = fs.readFileSync(
   path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
 const buildSrc = html.match(/function buildTable\(words, grid\) \{[\s\S]*?\n\}\n\nasync function analyzeImage/)[0]
   .replace(/\n\nasync function analyzeImage$/, "");
-const rangeSrc = html.match(/function selectRange\(arr, anchor, idx\) \{[\s\S]*?\n\}\n\nfunction cycleSelection/)[0]
-  .replace(/\n\nfunction cycleSelection$/, "");
+// 欄／列的驗算角色（加項／減項／合計）是純邏輯，直接抽出來測
+const selSrc = [
+  html.match(/const sel = \{[\s\S]*?let selMode = 1;/)[0],
+  ...["setRole", "removeSel", "addRange", "selCount", "selIndices", "selSigns"]
+    .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0]),
+].join("\n");
 
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
 // 用 index.html 裡真正的數字解析，避免測試與實作各寫一份
@@ -46,9 +50,7 @@ assert.ok(isNaN(Validator._num("Grand total 1,000 dollars")));
 eval(html.match(/function charWidth\(ch\) \{[\s\S]*?\n\}\n/)[0]);
 eval(html.match(/function splitBoxAtLine\(w, vLines\) \{[\s\S]*?\n\}\n/)[0]);
 
-let signs = new Map();
-eval(buildSrc);
-eval(rangeSrc);
+eval(buildSrc);   // 選取角色（selSrc）留到最後再 eval，避免蓋掉測試自己的變數
 
 const w = (text, x1, x2, cy, score = 1, h = 20) => ({
   text, x1, x2, y1: cy - h / 2, y2: cy + h / 2,
@@ -136,21 +138,45 @@ const emptyCol = buildTable([
 assert.deepStrictEqual(emptyCol.data[0], ["科目", "金額"]);
 assert.deepStrictEqual(emptyCol.data[1], ["租金", "12,000"]);
 
-// Shift 連續選取
-let arr = [3];
-signs = new Map();
-selectRange(arr, 3, 6);
-assert.deepStrictEqual(arr, [3, 4, 5, 6]);
-assert.strictEqual(signs.get(5), 1);
+// 欄／列角色：加項、減項、合計（先選角色再點欄號）
+// 用 Function 包一層，避免 eval 的 function 宣告蓋到測試自己的名字
+const selCtx = new Function(selSrc + "\n; return { sel, setRole, removeSel, addRange, selCount, selIndices, selSigns };")();
+const { sel, setRole, removeSel, addRange, selCount, selIndices, selSigns } = selCtx;
+const resetSel = () => { sel.col = { plus: [], minus: [], total: null }; sel.row = { plus: [], minus: [], total: null }; };
+resetSel();
+setRole("col", 0, 1);            // 第1欄 加項
+setRole("col", 1, 1);            // 第2欄 加項
+setRole("col", 4, 0);            // 第5欄 合計
+assert.deepStrictEqual(selIndices("col"), [0, 1, 4]);      // 合計一定在最後
+assert.deepStrictEqual([...selSigns("col").entries()], [[0, 1], [1, 1]]);
+assert.strictEqual(selCount("col"), 3);
 
-arr = [10];
-selectRange(arr, 10, 3);
-assert.deepStrictEqual(arr, [3, 4, 5, 6, 7, 8, 9, 10]);
+// 同一個角色再點一次 → 取消
+setRole("col", 1, 1);
+assert.deepStrictEqual(selIndices("col"), [0, 4]);
 
-// 已選合計 10、Shift 選 4-8：合計 10 保留在最後
-arr = [3, 4, 10];
-selectRange(arr, 4, 8);
-assert.deepStrictEqual(arr, [3, 4, 5, 6, 7, 8, 10]);
+// 直接換角色（不用先取消）
+setRole("col", 0, -1);
+assert.deepStrictEqual([...selSigns("col").entries()], [[0, -1]]);
+
+// 合計只能一個：指定新的合計，舊的合計會變成沒角色
+setRole("col", 0, 0);
+assert.deepStrictEqual(selIndices("col"), [0]);
+
+// 沒指定合計時，沿用最後一個加項當合計（與舊行為一致）
+resetSel();
+setRole("col", 2, 1); setRole("col", 3, 1);
+assert.deepStrictEqual(selIndices("col"), [2, 3, 3]);
+
+// Shift 連續選取：錨點到目標整段設成加項，合計保留在最後
+resetSel();
+setRole("col", 1, 1); setRole("col", 5, 0);
+addRange("col", 3);
+assert.deepStrictEqual(selIndices("col"), [1, 2, 3, 5]);
+
+// 點 chip 取消單一欄
+removeSel("col", 2);
+assert.deepStrictEqual(selIndices("col"), [1, 3, 5]);
 
 // 全形數字、句點被讀成千分位
 assert.strictEqual(Validator._num("２００,０００"), 200000);

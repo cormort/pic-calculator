@@ -147,7 +147,35 @@
   .hint { font-size: .82rem; color: var(--muted); padding: 8px 12px; background: #f8f9fc; border-left: 3px solid var(--info); border-radius: 4px; }
 
   /* 表格 */
-  .table-wrap { padding: 8px 8px 16px; overflow: auto; max-height: min(72vh, 640px); }
+  .table-wrap { padding: 8px 8px 16px; overflow: auto; max-height: min(62vh, 620px); }
+  @media (max-width: 600px) { .table-wrap { max-height: 54vh; } }
+  /* 選取托盤：先選角色，再點欄號／列號 */
+  .sel-tray {
+    position: sticky; top: 8px; z-index: 5;
+    padding: 10px 12px 12px; margin-bottom: 12px;
+    background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 1px 6px rgba(0,0,0,.08);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .sel-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .sel-label { font-size: .82rem; color: var(--muted); font-weight: 700; }
+  .seg {
+    min-height: 40px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border);
+    background: #fff; font-weight: 800; font-size: .9rem; color: var(--muted); cursor: pointer;
+    touch-action: manipulation;
+  }
+  .seg.on { background: #eef2ff; border-color: var(--primary); color: var(--primary); }
+  @media (max-width: 430px) {
+    .sel-label { display: none; }          /* 手機上把標籤藏起來，三個角色按鈕才排得成一列 */
+    .seg { padding: 8px 10px; font-size: .85rem; }
+  }
+  .sel-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 34px; }
+  .chip { min-height: 34px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: #fff; font-weight: 800; font-size: .85rem; cursor: pointer; touch-action: manipulation; }
+  .chip.plus { color: var(--plus); background: #e8f4fd; border-color: #aed6f1; }
+  .chip.minus { color: var(--minus); background: #fdedec; border-color: #f5b7b1; }
+  .chip.target { color: var(--target); background: #fef5e7; border-color: #f8c471; }
+  .chip-note { font-size: .8rem; color: var(--muted); }
+
   /* 表頭固定：長表格往下捲時還看得到欄號，橫向捲動時列號固定（.row-head 用 sticky left） */
   table.data thead th { position: sticky; top: 0; z-index: 3; }
   table.data td.cell-review { box-shadow: inset 0 0 0 3px var(--warn); background: #fff7e0; }
@@ -159,9 +187,11 @@
     min-width: 60px;
     position: relative;
   }
-  table.data th { background: #f0f3ff; font-weight: 700; cursor: pointer; user-select: none; }
+  table.data th { background: #f0f3ff; font-weight: 700; cursor: pointer; user-select: none; padding: 10px 12px; touch-action: manipulation; }
+  table.data th:focus-visible, table.data td.row-head:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
   table.data th.row-head, table.data td.row-head {
     background: #f0f3ff; font-weight: 700; text-align: center; cursor: pointer; user-select: none;
+    padding: 10px 12px; touch-action: manipulation;
     position: sticky; left: 0; z-index: 1;
   }
   table.data td.row-head { background: #f7f8fc; }
@@ -170,11 +200,11 @@
 
   /* 欄/列點選狀態 */
   table.data th.sel-plus, table.data td.row-head.sel-plus { background: #d6eaf8; color: var(--plus); }
-  table.data th.sel-plus::after, table.data td.row-head.sel-plus::after { content: "+"; font-size: 1rem; color: var(--plus); display: block; font-weight: 700; }
+  table.data th.sel-plus::after, table.data td.row-head.sel-plus::after { content: "+"; font-size: .95rem; color: var(--plus); display: inline-block; margin-left: 3px; font-weight: 700; }
   table.data th.sel-minus, table.data td.row-head.sel-minus { background: #fadbd8; color: var(--minus); }
-  table.data th.sel-minus::after, table.data td.row-head.sel-minus::after { content: "−"; font-size: 1rem; color: var(--minus); display: block; font-weight: 700; }
+  table.data th.sel-minus::after, table.data td.row-head.sel-minus::after { content: "−"; font-size: .95rem; color: var(--minus); display: inline-block; margin-left: 3px; font-weight: 700; }
   table.data th.sel-target, table.data td.row-head.sel-target { background: #fdebd0; color: var(--target); }
-  table.data th.sel-target::after, table.data td.row-head.sel-target::after { content: "="; font-size: 1rem; color: var(--target); display: block; font-weight: 700; }
+  table.data th.sel-target::after, table.data td.row-head.sel-target::after { content: "="; font-size: .95rem; color: var(--target); display: inline-block; margin-left: 3px; font-weight: 700; }
 
   /* 驗算結果 */
   table.data td.cell-ok { background: #eafaf1; font-weight: 700; color: #1a6640; }
@@ -330,12 +360,25 @@
       </div>
       <div class="card-body">
         <div class="hint">
-          👉 點 <strong>欄號</strong>(上方) → 進行欄驗算; 點 <strong>列號</strong>(左側) → 進行列驗算。<br>
-          每個欄/列點擊循環:<span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → 取消。最後一個被選的會自動成為 <span style="color:var(--target);font-weight:700">＝</span> 合計。<br>
-          <strong>連續選取</strong>：Shift＋點欄號/列號可一次選一整段；若已先點合計列，會把它保留在最後當合計。<br>
+          👉 <strong>先在上面的托盤選角色</strong>，再點 <strong>欄號</strong>（表格上方）或 <strong>列號</strong>（左側）套用：<br>
+          <span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → <span style="color:var(--target);font-weight:700">＝</span> 合計（每個方向一個）。
+          同一個角色再點一次就取消；選錯直接點對的角色即可。選到的欄／列會列在托盤上，<strong>點 chip 就能取消</strong>。<br>
+          <strong>連續選取</strong>：Shift＋點可一次選一整段（手機可先在托盤選「加項」再逐欄點）。<br>
           <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。
         </div>
       </div>
+    </div>
+
+    <!-- 選取托盤：先選角色，再點下方表格的欄號／列號 -->
+    <div class="sel-tray" id="sel-tray">
+      <div class="sel-row" id="sel-mode">
+        <span class="sel-label">點欄號／列號時</span>
+        <button class="seg on" data-role="1" onclick="setSelMode(1)">＋ 加項</button>
+        <button class="seg" data-role="-1" onclick="setSelMode(-1)">− 減項</button>
+        <button class="seg" data-role="0" onclick="setSelMode(0)">＝ 合計</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearSelections()">清空</button>
+      </div>
+      <div class="sel-chips" id="sel-chips"></div>
     </div>
 
     <!-- 資料表格 -->
@@ -602,9 +645,12 @@ let cameraStream = null;
 let tableData = [];           // 2D array of strings
 let cellConfidence = [];      // 與 tableData 對齊的每格 OCR 信心 (0~1)
 let cellRepairs = new Map();  // "r,c" -> { from, to } 自動整理過的數字（千分位/全形/混淆字）
-let selectedCols = [];        // [colIdx, ...] - 順序代表加入順序，最後一個是合計
-let selectedRows = [];        // [rowIdx, ...]
-let signs = new Map();        // index -> +1 or -1
+// 欄／列的驗算角色：＋ 加項、− 減項、＝ 合計（每個方向只會有一個合計）
+const sel = {
+  col: { plus: [], minus: [], total: null },
+  row: { plus: [], minus: [], total: null },
+};
+let selMode = 1;              // 目前點欄號／列號要套用的角色：1 加項、-1 減項、0 合計
 let lastResult = null;
 let smartActive = false, smartInfo = null;   // 智慧合計
 const smartBad = new Set();                  // "r,c" -> 自動比對不符的合計
@@ -1349,7 +1395,7 @@ function renderTable() {
   let html = '<thead><tr><th class="row-head">列＼欄</th>';
   for (let c = 0; c < cols; c++) {
     const cls = colClass(c);
-    html += `<th class="${cls}" data-col="${c}" onclick="onColClick(${c}, event)">${c + 1}</th>`;
+    html += `<th class="${cls}" data-col="${c}" tabindex="0" role="button" aria-label="第 ${c + 1} 欄" onclick="onColClick(${c}, event)">${c + 1}</th>`;
   }
   html += '</tr></thead><tbody>';
 
@@ -1359,7 +1405,7 @@ function renderTable() {
     const rowOut = !inEndRow || !inStartRow;
     const rcls = rowOut ? 'row-out' : '';
     const rowHeadCls = rowClass(r);
-    html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" onclick="onRowClick(${r}, event)">${r + 1}</td>`;
+    html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" tabindex="0" role="button" aria-label="第 ${r + 1} 列" onclick="onRowClick(${r}, event)">${r + 1}</td>`;
     for (let c = 0; c < cols; c++) {
       const v = tableData[r][c] ?? '';
       const inCol = c + 1 >= startCol && (!endColVal || c + 1 <= endColVal);
@@ -1393,108 +1439,142 @@ function escapeHtml(s) {
 }
 
 function colClass(c) {
-  if (selectedCols.includes(c)) {
-    const isLast = selectedCols[selectedCols.length - 1] === c;
-    if (isLast) return 'sel-target';
-    return signs.get(c) === -1 ? 'sel-minus' : 'sel-plus';
-  }
+  const k = sel.col;
+  if (k.total === c) return 'sel-target';
+  if (k.plus.includes(c)) return 'sel-plus';
+  if (k.minus.includes(c)) return 'sel-minus';
   return '';
 }
 function rowClass(r) {
-  if (selectedRows.includes(r)) {
-    const isLast = selectedRows[selectedRows.length - 1] === r;
-    if (isLast) return 'sel-target';
-    return signs.get(r) === -1 ? 'sel-minus' : 'sel-plus';
-  }
+  const k = sel.row;
+  if (k.total === r) return 'sel-target';
+  if (k.plus.includes(r)) return 'sel-plus';
+  if (k.minus.includes(r)) return 'sel-minus';
   return '';
 }
 
 /* =============================================================
-    點選邏輯
-    ============================================================= */
+   點選邏輯：先選角色，再點欄號／列號
+   ============================================================= */
+// 原本是「點一次＋、再點−、再點取消」，要湊出「A＋B＝C」得記順序又常點錯。
+// 改成先在上面的托盤選角色（加項／減項／合計），再點欄號或列號套用；
+// 同一個角色再點一次就取消，換角色直接再點即可。
+function setSelMode(role) {
+  selMode = role;
+  document.querySelectorAll('#sel-mode .seg').forEach((b) => {
+    b.classList.toggle('on', +b.dataset.role === role);
+  });
+  const hint = document.getElementById('sel-mode-hint');
+  if (hint) hint.textContent = role === 1 ? '點欄號／列號 → 加入「加項」'
+    : role === -1 ? '點欄號／列號 → 設為「減項」'
+    : '點欄號／列號 → 設為「合計」（一個就好）';
+}
+
+function setRole(kind, idx, role) {
+  const k = sel[kind];
+  const cur = k.total === idx ? 0 : k.plus.includes(idx) ? 1 : k.minus.includes(idx) ? -1 : null;
+  k.plus = k.plus.filter(i => i !== idx);
+  k.minus = k.minus.filter(i => i !== idx);
+  if (k.total === idx) k.total = null;
+  if (cur === role) return;             // 再點一次同角色 → 取消
+  if (role === 0) k.total = idx;
+  else if (role === 1) k.plus.push(idx);
+  else k.minus.push(idx);
+}
+
+function removeSel(kind, idx) {
+  const k = sel[kind];
+  k.plus = k.plus.filter(i => i !== idx);
+  k.minus = k.minus.filter(i => i !== idx);
+  if (k.total === idx) k.total = null;
+}
+
+// Shift＋點：把前一個到這一個整段都設成「加項」
+function addRange(kind, idx) {
+  const k = sel[kind];
+  const anchor = [...k.plus, ...k.minus].slice(-1)[0];
+  if (anchor === undefined) { setRole(kind, idx, selMode); return; }
+  const lo = Math.min(anchor, idx), hi = Math.max(anchor, idx);
+  for (let i = lo; i <= hi; i++) {
+    if (i === k.total || k.plus.includes(i) || k.minus.includes(i)) continue;
+    k.plus.push(i);
+  }
+}
+
+function selCount(kind) {
+  const k = sel[kind];
+  return k.plus.length + k.minus.length + (k.total !== null ? 1 : 0);
+}
+// 給 Validator 用：加項在前、合計在最後；沒有指定合計時沿用最後選的那一個
+function selIndices(kind) {
+  const k = sel[kind];
+  const idx = [...k.plus, ...k.minus];
+  if (k.total !== null) idx.push(k.total);
+  else if (idx.length) idx.push(idx[idx.length - 1]);
+  return idx;
+}
+function selSigns(kind) {
+  const m = new Map();
+  sel[kind].plus.forEach(i => m.set(i, 1));
+  sel[kind].minus.forEach(i => m.set(i, -1));
+  return m;
+}
+
 function onColClick(c, ev) {
   clearSmart();   // 手動選取時改用驗算角色
-  if (ev && ev.shiftKey && selectedCols.length) {
-    selectRange(selectedCols, selectedCols[selectedCols.length - 1], c);
-  } else {
-    cycleSelection(selectedCols, c);
-  }
+  if (ev && ev.shiftKey) addRange('col', c);
+  else setRole('col', c, selMode);
   afterSelectionChange();
 }
 function onRowClick(r, ev) {
   clearSmart();
-  if (ev && ev.shiftKey && selectedRows.length) {
-    selectRange(selectedRows, selectedRows[selectedRows.length - 1], r);
-  } else {
-    cycleSelection(selectedRows, r);
-  }
+  if (ev && ev.shiftKey) addRange('row', r);
+  else setRole('row', r, selMode);
   afterSelectionChange();
 }
 
-// 選取不足 2 個時舊的驗算結果要一併清掉，否則色塊與錯誤清單會殘留
+// 選取不足 2 個時舊的驗算結果要一併清掉，否則色塊、錯誤清單與摘要會殘留舊結果
 function afterSelectionChange() {
-  if (selectedCols.length >= 2 || selectedRows.length >= 2) { validate(); return; }
+  renderSelectionTray();
+  if (selCount('col') >= 2 || selCount('row') >= 2) { validate(); return; }
+  const hadResult = Validator.errors.size > 0;
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
   renderTable();
-}
-
-// Shift 連續選取：把 anchor 到 idx 整段加入選取（＋）；若原本的合計不在範圍內，保留它在最後
-function selectRange(arr, anchor, idx) {
-  const lo = Math.min(anchor, idx), hi = Math.max(anchor, idx);
-  const prevLast = arr[arr.length - 1];
-  const kept = arr.filter(i => i < lo || i > hi);
-  const range = [];
-  for (let i = lo; i <= hi; i++) range.push(i);
-  let next = kept.concat(range);
-  if (arr.length && !(prevLast >= lo && prevLast <= hi) && kept.includes(prevLast)) {
-    next = next.filter(i => i !== prevLast).concat([prevLast]);
-  }
-  arr.splice(0, arr.length, ...next);
-  for (let i = lo; i <= hi; i++) signs.set(i, +1);
-}
-
-function cycleSelection(arr, idx) {
-  const pos = arr.indexOf(idx);
-  if (pos === -1) {
-    arr.push(idx);
-    signs.set(idx, +1);
-  } else if (signs.get(idx) === +1) {
-    signs.set(idx, -1);
-  } else {
-    arr.splice(pos, 1);
-    signs.delete(idx);
+  if (hadResult) {
+    renderSummary({ kind: 'info', text: '已取消選取。至少要有「1 個加項 ＋ 1 個合計」才會驗算。' });
   }
 }
 
-function onCellEdit(td) {
-  const r = +td.dataset.r, c = +td.dataset.c;
-  const newVal = td.innerText.trim();
-  // 只點進去沒改內容：不重繪（否則下一下點擊的目標會被換掉）、不清驗算結果與低信心標示
-  if (newVal === String(tableData[r]?.[c] ?? '')) return;
-  while (tableData[r].length <= c) tableData[r].push('');
-  tableData[r][c] = newVal;
-  if (!cellConfidence[r]) cellConfidence[r] = [];
-  while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
-  cellConfidence[r][c] = 1;   // 人工確認過，不再算低信心
-  // 手打的整數也補千分位（25000 → 25,000），跟 OCR 結果和驗算的顯示一致
-  const plain = newVal.replace(/\s/g, '');
-  if (/^-?\d{4,}(\.\d+)?$/.test(plain)) {
-    const n = Validator._num(plain);
-    if (!isNaN(n)) { tableData[r][c] = n.toLocaleString('en-US', { maximumFractionDigits: 4 }); td.innerText = tableData[r][c]; }
+// 選取托盤：把「目前選了什麼」畫出來，點 chip 就取消該欄/列
+function renderSelectionTray() {
+  const box = document.getElementById('sel-chips');
+  if (!box) return;
+  const chips = [];
+  const name = { col: '欄', row: '列' };
+  const push = (kind, idx, role) => {
+    const label = role === 0 ? '＝' : role === 1 ? '＋' : '−';
+    const cls = role === 0 ? 'target' : role === 1 ? 'plus' : 'minus';
+    chips.push(`<button class="chip ${cls}" onclick="removeSel('${kind}',${idx}); afterSelectionChange()" `
+      + `title="點一下取消">${name[kind]}${idx + 1} ${label}</button>`);
+  };
+  for (const kind of ['col', 'row']) {
+    const k = sel[kind];
+    k.plus.forEach(i => push(kind, i, 1));
+    k.minus.forEach(i => push(kind, i, -1));
+    if (k.total !== null) push(kind, k.total, 0);
   }
-  renderReviewButton();
-  if (smartActive) { runSmartTotals(); return; }
-  // 編輯後依目前選取重新驗算，摘要與錯誤清單才會跟表格一致
-  afterSelectionChange();
+  const auto = (['col', 'row'].some(kind => sel[kind].total === null && selCount(kind) >= 2))
+    ? '<span class="chip-note">還沒指定合計 → 暫用最後選的那一欄／列</span>' : '';
+  box.innerHTML = chips.length ? chips.join('') + auto : '<span class="chip-note">尚未選取：點欄號或列號開始</span>';
 }
 
 function clearSelections() {
-  selectedCols = [];
-  selectedRows = [];
-  signs.clear();
+  sel.col = { plus: [], minus: [], total: null };
+  sel.row = { plus: [], minus: [], total: null };
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
+  renderSelectionTray();
   if (tableData.length) renderTable();
   renderSummary({ kind: 'info', text: '選取已重置。' });
 }
@@ -1518,7 +1598,9 @@ function runSmartTotals(showEmpty = false) {
     alert('智慧合計模組未載入，請重新整理頁面。');
     return;
   }
-  selectedCols = []; selectedRows = []; signs.clear();
+  sel.col = { plus: [], minus: [], total: null };
+  sel.row = { plus: [], minus: [], total: null };
+  renderSelectionTray();
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
 
@@ -1605,21 +1687,23 @@ function validate() {
   const startCol = startColEl ? (parseInt(startColEl.value) || 1) : 1;
   const endCol = endColEl ? (parseInt(endColEl.value) || 0) : 0;
 
-  let mode, selectedIndices;
-  if (selectedCols.length >= 2) {
+  let mode, selectedIndices, selectedSigns;
+  if (selCount('col') >= 2) {
     mode = 'horizontal';
-    selectedIndices = selectedCols.slice();
-  } else if (selectedRows.length >= 2) {
+    selectedIndices = selIndices('col');
+    selectedSigns = selSigns('col');
+  } else if (selCount('row') >= 2) {
     mode = 'vertical_row';
-    selectedIndices = selectedRows.slice();
+    selectedIndices = selIndices('row');
+    selectedSigns = selSigns('row');
   } else {
-    renderSummary({ kind: 'warn', text: '⚠️ 請至少選 2 個欄或 2 個列 (最後一個會自動視為合計)。' });
+    renderSummary({ kind: 'warn', text: '⚠️ 請至少選 2 個欄或 2 個列（1 個加項＋1 個合計）。' });
     return;
   }
 
   const result = Validator.validate({
     mode, sheetData: tableData, headerRow, endRow, startCol, endCol,
-    selectedIndices, selectedSigns: signs,
+    selectedIndices, selectedSigns,
     keywords: { trigger: [], exclude: [] }, sumDirection: 'bottom',
   });
   lastResult = result;
@@ -1716,6 +1800,23 @@ document.addEventListener('keydown', ev => {
   else if (ev.key === 'ArrowUp') go(-1, 0);
 });
 
+// 表頭用鍵盤操作：Tab 移到欄號／列號，Enter 或空白鍵套用目前角色
+document.addEventListener('keydown', ev => {
+  const head = ev.target?.closest?.('#data-table th[data-col], #data-table td.row-head[data-row]');
+  if (!head) return;
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    if (head.dataset.col !== undefined) onColClick(+head.dataset.col, ev);
+    else onRowClick(+head.dataset.row, ev);
+  } else if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+    const dir = ev.key === 'ArrowRight' ? 1 : -1;
+    const next = head.dataset.col !== undefined
+      ? document.querySelector(`#data-table th[data-col="${+head.dataset.col + dir}"]`)
+      : document.querySelector(`#data-table td.row-head[data-row="${+head.dataset.row + dir}"]`);
+    if (next) { ev.preventDefault(); next.focus(); }
+  }
+});
+
 // 複製成 TSV：直接貼進 Excel／Google 試算表對帳
 async function copyTable() {
   if (!tableData.length) { renderSummary({ kind: 'warn', text: '⚠️ 還沒有辨識結果可以複製。' }); return; }
@@ -1753,6 +1854,10 @@ if (autoAnalyzeEl) {
     try { localStorage.setItem('pcAutoAnalyze', autoAnalyze ? '1' : '0'); } catch (err) { /* 忽略 */ }
   });
 }
+
+// 選取托盤初始狀態
+setSelMode(1);
+renderSelectionTray();
 
 // 初始化辨識精度選單（記住上次選擇）
 const qualitySelect = document.getElementById('ocr-quality');
