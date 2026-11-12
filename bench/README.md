@@ -64,6 +64,15 @@ MIT 授權），而不是再調切欄規則 —— 它能直接預測「哪個�
 Linux／CI 轉檔：`.github/workflows/slanet-convert.yml`（手動觸發，兩套工具鏈各試一次，
 成功的那組會上傳 ONNX）。完整調查見 `bench/experiments/slanet_probe.py`。
 
+有自己的 Linux 機器（雲端主機）時，一行搞定：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cormort/pic-calculator/main/bench/experiments/cloud_convert.sh | bash
+```
+
+腳本會依序試 `paddle 2.6.2 + paddle2onnx 1.0.6 / 1.0.9`、`paddle 3.3.1 + paddle2onnx 2.1.0`，
+每組都跑完整驗收（3×4→15 格、4×4→20 格、不含 Loop），第一組通過就停並印出檔案路徑與 sha256。
+
 ## 目前基準
 
 `baseline.json` 是最後一次量測的結果（標準模型）。同機重跑的變動約 ±1–2 個百分點
