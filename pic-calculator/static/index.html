@@ -626,7 +626,10 @@ const Validator = {
     // ponytail: 「A 100」「ISO 9001」這種短英文＋數字仍會被當成數字；金額欄很少見，遇到再加例外
     s = s.replace(/[√✓✔]/g, ' ').trim();
     const money = s.match(/^([A-Za-z$\s]*?)([-(（]?\s*\d[\d,，.]*(?:[,，.]\s+\d[\d,，.]*)*\s*[)）]?\s*[%％]?)\s*([A-Za-z$元]*)$/);
-    if (money && (money[1] + money[3]).replace(/\s/g, '').length <= 6) s = money[2];
+    // 例外：數字後面「緊黏」的全是長得像數字的字母（2OO、1,0l）是辨識錯，不是幣別 ——
+    // 當成 2 會讓驗算悄悄算錯；回傳 NaN 才會被標成「不像數字」請人修正
+    const misread = money && /\d$/.test(money[2]) && /^[OoQDIl|SsBZzGgqT]+$/.test(money[3]);
+    if (money && !misread && (money[1] + money[3]).replace(/\s/g, '').length <= 6) s = money[2];
     s = fixThousandDots(s);
     if (/[a-zA-Z一-龥]/.test(s)) return NaN;
     if (!/^[-\d\.,，\(\)\$%\s]+$/.test(s)) return NaN;

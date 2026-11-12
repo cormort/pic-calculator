@@ -45,6 +45,15 @@ assert.ok(isNaN(Validator._num("Q3 2024")));
 assert.ok(isNaN(Validator._num("2023 vs 2024")));
 assert.ok(isNaN(Validator._num("1100 現金")));
 assert.ok(isNaN(Validator._num("Grand total 1,000 dollars")));
+// 數字後面緊黏「長得像數字的字母」是辨識錯（200 讀成 2OO），不是幣別：不能悄悄當成 2
+assert.ok(isNaN(Validator._num("2OO")));
+assert.ok(isNaN(Validator._num("1,0l")));
+assert.ok(isNaN(Validator._num("5S")));
+assert.strictEqual(Validator._num("1,000元"), 1000);
+assert.strictEqual(Validator._num("20,000 NTD"), 20000);
+assert.strictEqual(Validator._num("100USD"), 100);
+// OCR 流程裡仍會自動修回 200（修錯的話驗算會抓到）
+assert.strictEqual(repairCells([["金額"], ["2OO"], ["1,000"]], null).data[1][0], "200");
 
 // buildTable 會用到字寬估算與「跨格線拆框」
 eval(html.match(/function charWidth\(ch\) \{[\s\S]*?\n\}\n/)[0]);
