@@ -229,6 +229,34 @@ function rectifiedCanvas(bitmap, quad) {
 /* =============================================================
    格線偵測：找表格的直線與橫線，讓切欄切列不必靠空白去猜
    ============================================================= */
+// 找格線前的局部對比校正：每個像素除以附近的平均亮度（背景）。
+// detectLines 要求線比兩側暗 20 階；昏暗、低對比或半邊陰影的照片，淡格線差不到 20
+// 就整條漏掉，切欄只能退回用空白猜。除以背景後，「比紙暗 x%」的線在亮處暗處一樣明顯。
+// 只給找格線用，送進 OCR 的圖不動（調色、銳利化對辨識的影響要另外量，見 README）。
+function normalizeForLines(gray, W, H) {
+  const R = Math.max(8, Math.round(Math.max(W, H) / 30));   // 遠大於線寬與字的筆畫
+  const W1 = W + 1, sum = new Uint32Array(W1 * (H + 1));   // 積分圖：任意方框的總和 O(1)
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    for (let x = 0; x < W; x++) {
+      row += gray[y * W + x];
+      sum[(y + 1) * W1 + x + 1] = sum[y * W1 + x + 1] + row;
+    }
+  }
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const y0 = Math.max(0, y - R), y1 = Math.min(H, y + R + 1);
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(W, x + R + 1);
+      const s = sum[y1 * W1 + x1] - sum[y0 * W1 + x1] - sum[y1 * W1 + x0] + sum[y0 * W1 + x0];
+      // 背景下限 48：全黑區域不是紙，別把雜訊放大成線
+      const bg = Math.max(48, s / ((x1 - x0) * (y1 - y0)));
+      out[y * W + x] = Math.min(255, gray[y * W + x] * 255 / bg);
+    }
+  }
+  return out;
+}
+
 // 回傳每條線的 { a, b }：直線 x = a + b*y，橫線 y = a + b*x（容許照片歪一點）
 // 做法：沿線的方向切成數段，每段統計「比兩側都暗的細線像素」落在哪個位置，
 // 一段裡幾乎每一列都有 → 該處有線；再把各段的位置串起來，夠多段都有才算一條線。
@@ -429,9 +457,10 @@ self.onmessage = async (event) => {
       const rect = rectifiedCanvas(bitmap, msg.quad);
       canvas = rect.canvas;
       try {
+        const lineGray = normalizeForLines(rect.gray, rect.width, rect.height);
         grid = {
-          v: detectLines(rect.gray, rect.width, rect.height, true),
-          h: detectLines(rect.gray, rect.width, rect.height, false),
+          v: detectLines(lineGray, rect.width, rect.height, true),
+          h: detectLines(lineGray, rect.width, rect.height, false),
         };
       } catch (err) { /* 格線只是輔助，失敗就照舊用空白切欄 */ }
     } finally { bitmap.close(); }
