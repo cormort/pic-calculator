@@ -1065,16 +1065,31 @@ function stopCamera() {
   document.getElementById('camera-section').style.display = 'none';
   document.getElementById('camera-btn').textContent = '📷 拍照';
 }
-function capturePhoto() {
+// 影片影格 → 檔案：存 PNG（無損）。
+// 攝影機給的畫面本來就已經壓縮過一次，再用 JPEG 0.92 壓一次會把細字邊緣糊掉，
+// 對「小字表格」這種需要高頻細節的辨識是純損失。PNG 大約 2–5MB，桌機完全吃得下。
+function canvasToImageFile(canvas, name = `capture-${Date.now()}`) {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      if (blob) { resolve(new File([blob], `${name}.png`, { type: 'image/png' })); return; }
+      // 極少數瀏覽器不給 PNG（或 canvas 太大）→ 退回高品質 JPEG
+      canvas.toBlob((jpg) => {
+        resolve(jpg ? new File([jpg], `${name}.jpg`, { type: 'image/jpeg' }) : null);
+      }, 'image/jpeg', 0.98);
+    }, 'image/png');
+  });
+}
+
+async function capturePhoto() {
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
+  if (!video.videoWidth) { alert('相機還沒準備好，稍等一下再按一次'); return; }
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
-  canvas.toBlob(blob => {
-    const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' });
-    loadFile(file);
-  }, 'image/jpeg', 0.92);
+  const file = await canvasToImageFile(canvas);
+  if (!file) { alert('無法儲存這個影格（畫布太大？）請改用「選擇圖片」'); return; }
+  loadFile(file);
 }
 
 /* =============================================================
@@ -1166,7 +1181,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v30';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v33';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];

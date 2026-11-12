@@ -19,6 +19,10 @@ const QUALITY = {
   medium: { label: '高精度', size: '139MB', model: V6_MEDIUM_MODEL },
 };
 const MIN_CONFIDENCE = 0.5;
+// 轉正後畫布的最長邊。試過拉到 3200（想保留更多小字細節），實測反而退步
+// （格級 97.4% → 96.6%、數字格 97.6% → 97.0%，還慢一倍）：PP-OCR 的偵測在
+// 過大的圖上會把字切得更碎。維持 2560。
+const RECT_MAX_SIDE = 2560;
 const FULL_QUAD = [[0, 0], [1, 0], [1, 1], [0, 1]];
 
 const LAYOUT_MODEL = 'https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolve/7e851b9e5ad66613d7318a3213ab3336ebe0a514/pp_doclayout_s.onnx';
@@ -202,7 +206,7 @@ function rectifiedCanvas(bitmap, quad) {
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const w0 = Math.max(dist(pts[0], pts[1]), dist(pts[3], pts[2]), 1);
   const h0 = Math.max(dist(pts[0], pts[3]), dist(pts[1], pts[2]), 1);
-  const scale = Math.min(3, 2560 / Math.max(w0, h0));
+  const scale = Math.min(3, RECT_MAX_SIDE / Math.max(w0, h0));
   const dw = Math.round(w0 * scale), dh = Math.round(h0 * scale);
   const m = homography(dw - 1, dh - 1, pts);
 
