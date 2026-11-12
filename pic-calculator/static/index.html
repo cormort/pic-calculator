@@ -1015,6 +1015,7 @@ try {
 // 平均辨識信心值。實測清楚的圖 ≥ 0.96，解析度不足或模糊的圖 ≤ 0.75，取 0.85 為界
 let ocrConfidence = 1;
 let ocrGrid = null;   // 表格格線 { v: 直線, h: 橫線 }，由 Worker 偵測
+let lastGridWeak = false;   // 這一張幾乎沒有內部格線（欄位對位可能整批錯開）
 // 低信心門檻：固定 0.85 對「乾淨截圖」太吵（實測 15 格低信心有 8 格其實正確），
 // 對「模糊實拍」又太寬鬆 —— 交給使用者調，並記住選擇
 let LOW_CONFIDENCE = (() => {
@@ -1084,7 +1085,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v19';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v20';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1645,14 +1646,25 @@ async function analyzeImage() {
     clearSelections();
     ws.style.display = 'block';
     const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
+    // 幾乎沒有內部格線＝沒有欄界可用，切欄只能靠空白帶猜，數字會整批跑到錯的欄。
+    // 實測（bench/probe/g-borderless.png）：這類表格只有 23% 格正確、數字格 0%。
+    const vLines = (ocrGrid?.v || []).length, hLines = (ocrGrid?.h || []).length;
+    lastGridWeak = vLines < 3 || hLines < 3;
+    const gridNote = lastGridWeak
+      ? `　⚠️ 幾乎沒有偵測到內部格線（直線 ${vLines} 條、橫線 ${hLines} 條），`
+        + '欄位對位很可能整批錯開。<strong>建議</strong>：改成有格線的截圖，'
+        + '或把表格四角框緊一點再辨識一次。'
+      : '';
     const lowCount = lowConfidenceCount();
     const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心（橘線），請按「🔎 核對低信心」逐格確認。` : '';
     const fixNote = cellRepairs.size ? `　🔧 ${cellRepairs.size} 格已自動整理（虛線標示，游標移上去看原辨識）。` : '';
     const retryBtn = (blurry || lowCount > 3) && ocrQuality !== 'medium'
       ? ' <button class="btn btn-warn btn-sm" onclick="retryHighAccuracy()">🔁 用高精度模型重辨識</button>' : '';
     renderSummary(blurry
-      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}${fixNote}${retryBtn}` }
-      : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}` });
+      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}${fixNote}${retryBtn}${gridNote}` }
+      : lastGridWeak
+        ? { kind: 'warn', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}${gridNote}${retryBtn}` }
+        : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}` });
     renderTable();
     reviewPos = -1;
     renderReviewButton();
