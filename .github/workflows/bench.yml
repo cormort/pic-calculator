@@ -1,17 +1,19 @@
 name: bench
 
-# 真 OCR 的準確率量測：會下載 30MB 模型、開瀏覽器跑 6 張表，約 3–6 分鐘。
-# 刻意「不阻擋」：這是報表不是布林值，而且模型／CDN 抖一下就會失敗。
-# 結果會寫進 job summary，並把 run.json 留成 artifact。
+# 兩件事都跑：
+#   1. 準確率量測（6 張圖，會下載 30MB 模型）→ 報表，低於基準只提醒
+#   2. 混合 PDF 逐頁判斷（文字頁／掃描頁）→ 布林值，壞掉會直接指出哪一頁
+# 準確率那步是「報表」→ 失敗或退步只寫摘要、不讓 job 變紅（CDN 抖一下就可能失敗）。
+# 混合 PDF 那步是「守門員」→ 沒有 continue-on-error，壞掉會直接把 job 弄紅，
+#   而且 log 會指出是第幾頁判斷錯。看到紅燈先看 log：若是模型下載失敗就重跑一次。
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 20 * * 0"   # 每週日 20:00 UTC（台北週一 04:00）
 
 jobs:
-  accuracy:
+  bench:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -32,14 +34,35 @@ jobs:
           curl -sf -o /dev/null http://127.0.0.1:8765/index.html
 
       - name: 跑辨識並比對標準答案
+        continue-on-error: true
         run: |
           node bench/run_ocr.js --quality=small --out=out/run.json
           node bench/compare.js out/run.json
+
+      # 混合 PDF（文字頁 → 掃描頁 → 文字頁）：驗逐頁判斷與換頁狀態。
+      # if: always() —— 上面那步失敗（模型下載失敗等）也要跑這個，它不依賴模型。
+      - name: 混合 PDF 逐頁判斷
+        if: always()
+        run: |
+          set -o pipefail
+          node bench/check_mixed_pdf.js --base=http://127.0.0.1:8765/ 2>&1 | tee mixed-pdf.log
+
+      - name: 把混合 PDF 結果寫進摘要
+        if: always()
+        run: |
+          {
+            echo "### 混合 PDF 逐頁判斷（文字頁 → 掃描頁 → 文字頁）"
+            echo '```'
+            cat mixed-pdf.log 2>/dev/null || echo "沒有輸出（上一步可能沒跑）"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
 
       - name: 留下量測結果
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-run
-          path: out/run.json
+          path: |
+            out/run.json
+            mixed-pdf.log
           if-no-files-found: ignore
