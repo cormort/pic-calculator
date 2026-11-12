@@ -314,9 +314,10 @@
 <div class="container">
 
   <div class="upload-zone" id="drop-zone">
-    <!-- 不設 accept：手機瀏覽器看到 accept="image/*" 會先彈「相片庫／檔案」兩選項。
-         旁邊已有相機按鈕，這裡就是單純的檔案選擇器，型別由 loadFile() 自己檢查 -->
-    <input type="file" id="file-input">
+    <!-- accept 一定要留著：iOS 的 input[type=file] 一定會彈系統的「選擇一項操作」面板，
+         而面板項目是照 accept 決定的 —— 有 image/* 時是「照片圖庫／選擇檔案」，
+         完全不設 accept 反而多出「相機 攝影機」變成三個選項。單一選項在 iOS 做不到 -->
+    <input type="file" id="file-input" accept="image/*,application/pdf">
     <div class="up-icon">📷</div>
     <p>拖曳圖片到此，或點擊 <strong>選擇檔案</strong></p>
     <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP，以及 PDF（逐頁辨識）</p>
