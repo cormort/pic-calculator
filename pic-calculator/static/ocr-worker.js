@@ -207,6 +207,7 @@ function rectifiedCanvas(bitmap, quad) {
   const out = new OffscreenCanvas(dw, dh);
   const og = out.getContext('2d');
   const id = og.createImageData(dw, dh), d = id.data;
+  const outGray = new Uint8Array(dw * dh);   // 給格線偵測用
   for (let v = 0, o = 0; v < dh; v++) {
     for (let u = 0; u < dw; u++, o += 4) {
       const z = m[6] * u + m[7] * v + 1;
@@ -215,12 +216,64 @@ function rectifiedCanvas(bitmap, quad) {
       const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, p = y0 * W + x0;
       const top = gray[p] + (gray[p + 1] - gray[p]) * fx;
       const bot = gray[p + W] + (gray[p + W + 1] - gray[p + W]) * fx;
-      d[o] = d[o + 1] = d[o + 2] = top + (bot - top) * fy;
+      d[o] = d[o + 1] = d[o + 2] = outGray[o >> 2] = top + (bot - top) * fy;
       d[o + 3] = 255;
     }
   }
   og.putImageData(id, 0, 0);
-  return out;
+  return { canvas: out, gray: outGray, width: dw, height: dh };
+}
+
+/* =============================================================
+   格線偵測：找表格的直線與橫線，讓切欄切列不必靠空白去猜
+   ============================================================= */
+// 回傳每條線的 { a, b }：直線 x = a + b*y，橫線 y = a + b*x（容許照片歪一點）
+// 做法：沿線的方向切成數段，每段統計「比兩側都暗的細線像素」落在哪個位置，
+// 一段裡幾乎每一列都有 → 該處有線；再把各段的位置串起來，夠多段都有才算一條線。
+// 文字筆畫只佔一段的一小部分，串不起來，所以不會被當成線。
+function detectLines(gray, W, H, vertical) {
+  const A = vertical ? W : H, L = vertical ? H : W;   // A：跨線方向，L：沿線方向
+  const r = Math.max(4, Math.round(Math.max(W, H) / 200));   // 比線寬的一半大
+  const S = Math.max(4, Math.min(12, Math.floor(L / 120)));
+  const stripL = Math.floor(L / S);
+  if (stripL < 20 || A < 6 * r) return [];
+  const T = 20, tol = 2 * r + 0.06 * stripL;
+  const tracks = [];
+  for (let s = 0; s < S; s++) {
+    const counts = new Uint16Array(A), stamp = new Int32Array(A);
+    for (let l = s * stripL, end = l + stripL; l < end; l++) {
+      for (let a = r; a < A - r; a++) {
+        const i = vertical ? l * W + a : a * W + l, step = vertical ? r : r * W;
+        const v = gray[i] + T;
+        if (v < gray[i - step] && v < gray[i + step]) {
+          for (let k = a - 2; k <= a + 2; k++) if (stamp[k] !== l + 1) { stamp[k] = l + 1; counts[k]++; }
+        }
+      }
+    }
+    const thr = stripL * 0.7, mid = (s + 0.5) * stripL;
+    for (let a = 0; a < A; a++) {
+      if (counts[a] < thr) continue;
+      let e = a;
+      while (e + 1 < A && counts[e + 1] >= thr) e++;
+      const pos = (a + e) / 2;
+      a = e;
+      let best = null;
+      for (const t of tracks) {
+        if (t.lastS < s - 2 || t.lastS === s) continue;
+        const d = Math.abs(t.last - pos);
+        if (d <= tol && (!best || d < Math.abs(best.last - pos))) best = t;
+      }
+      if (!best) tracks.push(best = { pts: [] });
+      best.pts.push([mid, pos]); best.last = pos; best.lastS = s;
+    }
+  }
+  return tracks.filter(t => t.pts.length >= Math.ceil(S * 0.6)).map(t => {
+    const n = t.pts.length;
+    let sl = 0, sp = 0, sll = 0, slp = 0;
+    for (const [l, p] of t.pts) { sl += l; sp += p; sll += l * l; slp += l * p; }
+    const den = n * sll - sl * sl, b = den ? (n * slp - sl * sp) / den : 0;
+    return { a: (sp - b * sl) / n, b };
+  }).sort((p, q) => (p.a + p.b * L / 2) - (q.a + q.b * L / 2));
 }
 
 /* =============================================================
@@ -243,8 +296,17 @@ self.onmessage = async (event) => {
     const svc = await ensureService(msg.quality);
     postStatus('辨識中，請稍候…');
     const bitmap = await decodeImage(msg.buffer);
-    let canvas;
-    try { canvas = rectifiedCanvas(bitmap, msg.quad); } finally { bitmap.close(); }
+    let canvas, grid = null;
+    try {
+      const rect = rectifiedCanvas(bitmap, msg.quad);
+      canvas = rect.canvas;
+      try {
+        grid = {
+          v: detectLines(rect.gray, rect.width, rect.height, true),
+          h: detectLines(rect.gray, rect.width, rect.height, false),
+        };
+      } catch (err) { /* 格線只是輔助，失敗就照舊用空白切欄 */ }
+    } finally { bitmap.close(); }
     // per-box：逐框辨識。預設逐行合併遇到歪斜 2° 以上的照片會整張讀成亂碼
     const res = await svc.recognize(canvas, {
       flatten: true,
@@ -265,7 +327,7 @@ self.onmessage = async (event) => {
           score: r.confidence,
         };
       });
-    self.postMessage({ type: 'result', id, confidence, results, backend: { ocr: serviceBackend, layout: layoutBackend() } });
+    self.postMessage({ type: 'result', id, confidence, results, grid, backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });
   }

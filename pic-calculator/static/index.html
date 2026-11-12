@@ -744,6 +744,7 @@ try {
 } catch (err) { /* 隱私模式下 localStorage 可能不可用 */ }
 // 平均辨識信心值。實測清楚的圖 ≥ 0.96，解析度不足或模糊的圖 ≤ 0.75，取 0.85 為界
 let ocrConfidence = 1;
+let ocrGrid = null;   // 表格格線 { v: 直線, h: 橫線 }，由 Worker 偵測
 const LOW_CONFIDENCE = 0.85;
 
 let ocrWorker = null, ocrJobSeq = 0;
@@ -830,6 +831,7 @@ async function ocrWords(file, quad) {
   const buffer = await file.arrayBuffer();
   const msg = await workerRequest({ type: 'ocr', quality: ocrQuality, buffer, quad }, [buffer]);
   ocrConfidence = msg.confidence;
+  ocrGrid = msg.grid || null;
   return msg.results;
 }
 
@@ -848,9 +850,34 @@ function setOcrQuality(q) {
 
 /* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
-function buildTable(words) {
+// grid（可省略）：Worker 偵測到的表格格線 { v: [{a,b}], h: [{a,b}] }，直線 x = a + b*y、橫線 y = a + b*x
+function buildTable(words, grid) {
   if (!words.length) return { data: [], confidence: [] };
   const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
+
+  // 偵測有時把同一列相鄰幾欄的數字框成一個框（文字是「50,000 25,264 8,692」）。
+  // 以空白切開後每段都是完整數字，就依字元位置等比例拆回多個框，後面才切得出欄
+  const wholeNum = t => !isNaN(Validator._num(t)) && /\d$/.test(t) && /^[-(（$\d]/.test(t);
+  words = words.flatMap(w => {
+    const parts = w.text.split(/\s+/).filter(Boolean);
+    if (parts.length < 2 || !parts.every(wholeNum)) return [w];
+    const per = (w.x2 - w.x1) / w.text.length;
+    let pos = 0;
+    return parts.map(text => {
+      const at = w.text.indexOf(text, pos);
+      pos = at + text.length;
+      const x1 = w.x1 + at * per, x2 = w.x1 + pos * per;
+      return { ...w, text, x1, x2, cx: (x1 + x2) / 2, split: true };
+    });
+  });
+
+  // 格線是最可靠的欄界：先記下每個框落在第幾條直線之間（seg），之後不跨線合併、也不跨線併欄
+  // 用轉正前的座標比對，因為線的位置是在原圖上量的
+  const vLines = grid?.v || [], hLines = grid?.h || [];
+  words = words.map(w => ({
+    ...w, ox: w.cx, oy: w.cy,
+    seg: vLines.reduce((n, l) => n + (l.a + l.b * w.cy < w.cx ? 1 : 0), 0),
+  }));
 
   // 校正歪斜：手機拍照很少完全水平。在 ±15° 內找出讓文字框「排成列」最整齊的角度
   // （把 y 投影到直方圖，越集中分數越高），再把座標轉正後才分列
@@ -884,12 +911,19 @@ function buildTable(words) {
 
   // 同列內相鄰文字框合併成 cell；信心取最小值
   const cellRows = rows.map(row => {
-    const gapTol = Math.max(avg(row, w => w.h) * 0.7, 8);
+    const rowH = avg(row, w => w.h);
+    const gapTol = Math.max(rowH * 0.7, 8);
+    const isNum = t => !isNaN(Validator._num(t));
     const cells = [];
     for (const w of row.sort((a, b) => a.x1 - b.x1)) {
       const last = cells[cells.length - 1];
+      // 兩個各自完整的數字不合併：欄位塞滿數字時（如 20,622,869 與 20,084,844）欄距可能比字高還小。
+      // 同一個數字被切開時，斷點會帶著逗號或小數點（「22,481,」+「607」），那種照舊合併
+      const twoNumbers = last && (w.split || w.x1 - last.x2 > rowH * 0.3)
+        && isNum(last.text) && isNum(w.text)
+        && !/[,，.\-(（]$/.test(last.text) && !/^[,，.)）%％]/.test(w.text);
       // 中文字之間不補空白（偵測常把一個詞切成數塊）
-      if (last && w.x1 - last.x2 <= gapTol) {
+      if (last && !twoNumbers && last.seg === w.seg && w.x1 - last.x2 <= gapTol) {
         last.text += (CJK.test(last.text.slice(-1)) || CJK.test(w.text[0]) ? '' : ' ') + w.text;
         last.x2 = Math.max(last.x2, w.x2);
         last.y1 = Math.min(last.y1, w.y1);
@@ -898,7 +932,7 @@ function buildTable(words) {
       } else {
         cells.push({
           text: w.text, x1: w.x1, x2: w.x2, y1: w.y1, y2: w.y2,
-          score: w.score ?? 1,
+          score: w.score ?? 1, seg: w.seg,
         });
       }
     }
@@ -908,31 +942,51 @@ function buildTable(words) {
 
   // 跨列對齊欄位：用「資料列之間沒有文字覆蓋的垂直空白帶」切欄。
   // 表頭常置中、數字常右對齊，中心點分群會把兩者拆成不同欄；空白帶不會。
+  // 有格線時，每兩條直線之間各自切一次：線一定是欄界，線沒抓到的地方仍由空白帶補上
   const numericRows = cellRows.filter(row => row.some(c => !isNaN(Validator._num(c.text))));
   const sample = numericRows.length ? numericRows : cellRows.filter(r => r.length >= 2);
-  const intervals = (sample.length ? sample : cellRows)
-    .flatMap(row => row.map(c => [c.x1, c.x2]))
-    .sort((a, b) => a[0] - b[0]);
-  if (!intervals.length) return { data: [], confidence: [] };
-
-  const merged = [];
-  for (const [x1, x2] of intervals) {
-    const last = merged[merged.length - 1];
-    if (last && x1 <= last[1]) last[1] = Math.max(last[1], x2);
-    else merged.push([x1, x2]);
-  }
+  const sampleRows = sample.length ? sample : cellRows;
   const heights = words.map(w => w.h).sort((a, b) => a - b);
   const medH = heights[heights.length >> 1] || 20;
   const minGap = Math.max(medH * 0.8, 12);
-  const bounds = [merged[0][0]];
-  for (let i = 1; i < merged.length; i++) {
-    if (merged[i][0] - merged[i - 1][1] >= minGap)
-      bounds.push((merged[i - 1][1] + merged[i][0]) / 2);
+
+  // 回傳這一段（兩條直線之間）的欄界；段內沒有可用的文字就當成一欄
+  const bandsOf = seg => {
+    const segRows = sampleRows.map(row => row.filter(c => c.seg === seg));
+    const intervals = segRows.flatMap(row => row.map(c => [c.x1, c.x2])).sort((a, b) => a[0] - b[0]);
+    if (!intervals.length) return [-Infinity, Infinity];
+    const merged = [];
+    for (const [x1, x2] of intervals) {
+      const last = merged[merged.length - 1];
+      if (last && x1 <= last[1]) last[1] = Math.max(last[1], x2);
+      else merged.push([x1, x2]);
+    }
+    // 空白帶比 minGap 窄時，若至少兩列都有「相鄰兩格分居兩側」，仍算欄界：
+    // 同列合併時沒併起來的兩格本來就是不同格，整張表又都空著這一條，就是欄距很窄的兩欄
+    const straddled = (L, R) => segRows.filter(row =>
+      row.some((c, k) => k > 0 && row[k - 1].x2 <= L && c.x1 >= R)).length >= 2;
+    const bounds = [merged[0][0]];
+    for (let i = 1; i < merged.length; i++) {
+      const L = merged[i - 1][1], R = merged[i][0];
+      if (R - L >= minGap || straddled(L, R)) bounds.push((L + R) / 2);
+    }
+    bounds.push(merged[merged.length - 1][1]);
+    return bounds;
+  };
+
+  const allCells = cellRows.flat();
+  if (!allCells.length) return { data: [], confidence: [] };
+  const segMin = Math.min(...allCells.map(c => c.seg)), segMax = Math.max(...allCells.map(c => c.seg));
+  const segBounds = [], segOffset = [];
+  let ncols = 0;
+  for (let seg = segMin; seg <= segMax; seg++) {
+    segBounds[seg] = bandsOf(seg);
+    segOffset[seg] = ncols;
+    ncols += Math.max(segBounds[seg].length - 1, 1);
   }
-  bounds.push(merged[merged.length - 1][1]);
-  const ncols = Math.max(bounds.length - 1, 1);
 
   const colOf = cell => {
+    const bounds = segBounds[cell.seg];
     let best = 0, bestOverlap = -1;
     for (let i = 0; i < bounds.length - 1; i++) {
       const overlap = Math.min(cell.x2, bounds[i + 1]) - Math.max(cell.x1, bounds[i]);
@@ -945,10 +999,11 @@ function buildTable(words) {
         if (d < bestDist) { bestDist = d; best = i; }
       }
     }
-    return best;
+    return segOffset[cell.seg] + best;
   };
 
-  const outRows = cellRows.map(row => {
+  const joinText = (a, b, sep) => !a ? b : a + (CJK.test(a.slice(-1)) || CJK.test(b[0]) ? sep : ' ') + b;
+  let outRows = cellRows.map((row, i) => {
     const out = Array(ncols).fill('');
     const conf = Array(ncols).fill(1);
     for (const c of row) {
@@ -956,15 +1011,42 @@ function buildTable(words) {
       out[ci] = out[ci] ? out[ci] + ' ' + c.text : c.text;
       conf[ci] = Math.min(conf[ci], Number.isFinite(c.score) ? c.score : 1);
     }
-    return { out, conf };
+    // 這一列落在第幾條橫線之間（0 與 hLines.length 表示在表格外）
+    const x = avg(rows[i], w => w.ox), y = avg(rows[i], w => w.oy);
+    return { out, conf, band: hLines.reduce((n, l) => n + (l.a + l.b * x < y ? 1 : 0), 0) };
   });
 
-  let keep = ncols;
+  // 橫線之間有兩行字（表頭或科目名稱換行：「臺灣大學(大」＋「學)」）→ 併回同一列。
+  // 條件：橫線幾乎每列都有（只有表頭線與底線的表，線之間本來就是很多列），
+  // 而且這幾行最多只有一行帶數字（兩行都有數字就是兩筆資料，只是中間的線沒抓到）
+  const inside = outRows.filter(r => r.band > 0 && r.band < hLines.length);
+  if (hLines.length >= 3 && new Set(inside.map(r => r.band)).size >= inside.length * 0.6) {
+    const hasNum = r => r.out.some(t => !isNaN(Validator._num(t)));
+    const groups = [];
+    for (const r of outRows) {
+      const g = groups[groups.length - 1];
+      if (g && g[0].band === r.band && r.band > 0 && r.band < hLines.length) g.push(r);
+      else groups.push([r]);
+    }
+    outRows = groups.flatMap(g => {
+      if (g.length < 2 || g.filter(hasNum).length > 1) return g;
+      const first = g[0];
+      for (const r of g.slice(1)) {
+        r.out.forEach((t, c) => { if (t) first.out[c] = joinText(first.out[c], t, ''); });
+        r.conf.forEach((v, c) => { first.conf[c] = Math.min(first.conf[c], v); });
+      }
+      return [first];
+    });
+  }
+
+  // 去掉頭尾整欄空白（例如頁面邊緣被當成線而多出來的欄）
+  let from = 0, keep = ncols;
   while (keep > 1 && outRows.every(r => !r.out[keep - 1])) keep--;
+  while (from < keep - 1 && outRows.every(r => !r.out[from])) from++;
 
   return {
-    data: outRows.map(r => r.out.slice(0, keep)),
-    confidence: outRows.map(r => r.conf.slice(0, keep).map(s => Math.round(s * 1000) / 1000)),
+    data: outRows.map(r => r.out.slice(from, keep)),
+    confidence: outRows.map(r => r.conf.slice(from, keep).map(s => Math.round(s * 1000) / 1000)),
   };
 }
 
@@ -988,7 +1070,7 @@ async function analyzeImage() {
         ]);
       } catch (err) { /* 偵測失敗已在 loadFile 提示 */ }
     }
-    const built = buildTable(await ocrWords(currentFile, quad));
+    const built = buildTable(await ocrWords(currentFile, quad), ocrGrid);
     tableData = built.data;
     cellConfidence = built.confidence;
     const blurry = ocrConfidence < LOW_CONFIDENCE;

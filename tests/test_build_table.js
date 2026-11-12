@@ -8,7 +8,7 @@ const path = require("path");
 
 const html = fs.readFileSync(
   path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
-const buildSrc = html.match(/function buildTable\(words\) \{[\s\S]*?\n\}\n\nasync function analyzeImage/)[0]
+const buildSrc = html.match(/function buildTable\(words, grid\) \{[\s\S]*?\n\}\n\nasync function analyzeImage/)[0]
   .replace(/\n\nasync function analyzeImage$/, "");
 const rangeSrc = html.match(/function selectRange\(arr, anchor, idx\) \{[\s\S]*?\n\}\n\nfunction cycleSelection/)[0]
   .replace(/\n\nfunction cycleSelection$/, "");
@@ -57,6 +57,50 @@ const merged = buildTable([
   w("8,900", 300, 360, 100, 0.95),
 ]);
 assert.strictEqual(merged.confidence[0][0], 0.4);
+
+// 欄位塞滿數字、欄距比字高還小（實拍：合計 / 臺灣大學 兩欄）：仍要切成兩欄
+const narrow = buildTable([
+  w("科目", 20, 80, 100), w("合計", 200, 240, 100), w("本校", 330, 370, 100),
+  w("業務收入", 20, 110, 150), w("20,622,869", 150, 270, 150), w("20,084,844", 280, 400, 150),
+  w("業務成本", 20, 110, 200), w("22,481,607", 150, 270, 200), w("22,004,357", 280, 400, 200),
+]);
+assert.deepStrictEqual(narrow.data[1], ["業務收入", "20,622,869", "20,084,844"]);
+assert.deepStrictEqual(narrow.data[2], ["業務成本", "22,481,607", "22,004,357"]);
+
+// 偵測把兩欄數字框成同一個框：拆回兩格
+const oneBox = buildTable([
+  w("業務收入", 20, 110, 150), w("20,622,869 20,084,844", 150, 400, 150),
+  w("業務成本", 20, 110, 200), w("22,481,607 22,004,357", 150, 400, 200),
+]);
+assert.deepStrictEqual(oneBox.data[0], ["業務收入", "20,622,869", "20,084,844"]);
+
+// 同一個數字被切開（斷點帶逗號）：照舊合併成一格
+const broken = buildTable([w("22,481,", 150, 230, 150), w("607", 240, 270, 150), w("9,000", 500, 560, 150)]);
+assert.deepStrictEqual(broken.data[0], ["22,481, 607", "9,000"]);
+
+// 有格線：線就是欄界，欄距再窄、表頭再寬都不會併欄；橫線之間的兩行表頭併回一列
+const vline = x => ({ a: x, b: 0 }), hline = y => ({ a: y, b: 0 });
+const gridWords = [
+  w("科目", 20, 80, 110), w("合計", 200, 240, 100), w("臺灣大學(大", 276, 404, 100), w("學)", 320, 360, 122),
+  w("業務收入", 20, 110, 150), w("20,622,869", 150, 272, 150), w("20,084,844", 278, 400, 150),
+  w("業務成本", 20, 110, 200), w("22,481,607 22,004,357", 150, 400, 200),
+];
+const withGrid = buildTable(gridWords, {
+  v: [10, 140, 275, 410].map(vline),
+  h: [85, 135, 175, 225].map(hline),
+});
+assert.deepStrictEqual(withGrid.data, [
+  ["科目", "合計", "臺灣大學(大學)"],
+  ["業務收入", "20,622,869", "20,084,844"],
+  ["業務成本", "22,481,607", "22,004,357"],
+]);
+
+// 少抓一條線：線之間仍由空白帶補切
+const missing = buildTable([
+  w("A", 20, 60, 150), w("1,000", 150, 200, 150), w("2,000", 300, 350, 150),
+  w("B", 20, 60, 200), w("3,000", 150, 200, 200), w("4,000", 300, 350, 200),
+], { v: [10, 100, 400].map(vline), h: [] });
+assert.deepStrictEqual(missing.data[0], ["A", "1,000", "2,000"]);
 
 // Shift 連續選取
 let arr = [3];
