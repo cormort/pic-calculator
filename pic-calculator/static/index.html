@@ -343,6 +343,7 @@
     <button class="btn btn-outline btn-sm" onclick="renderPdfPage(pdfPage - 1)">◀ 上一頁</button>
     <span id="pdf-page-info">第 1 / 1 頁</span>
     <button class="btn btn-outline btn-sm" onclick="renderPdfPage(pdfPage + 1)">下一頁 ▶</button>
+    <button class="btn btn-outline btn-sm" id="pdf-all-btn" onclick="pdfAllPages()">📚 全部頁一次辨識</button>
     <span class="pdf-hint">換頁後會自動框選並辨識；匯出的 CSV 檔名會帶頁碼</span>
   </div>
 
@@ -434,6 +435,7 @@
         <button class="btn btn-outline btn-sm" onclick="batchStep(-1)">◀ 上一張</button>
         <button class="btn btn-outline btn-sm" onclick="batchStep(1)">下一張 ▶</button>
         <span class="note" id="batch-hint"></span>
+        <button class="btn btn-sm" id="batch-run" onclick="batchRunAll()">▶ 全部辨識</button>
         <button class="btn btn-outline btn-sm" onclick="toggleBatchSummary()">📊 批次總表</button>
         <div id="batch-chips" style="display:flex; gap:6px; flex-wrap:wrap; width:100%;"></div>
       </div>
@@ -562,7 +564,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=50"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=52"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -882,6 +884,7 @@ handles.forEach((h, i) => h.addEventListener('pointerdown', e => {
 let autoAnalyze = true;
 try { autoAnalyze = localStorage.getItem('pcAutoAnalyze') !== '0'; } catch (err) { /* 忽略 */ }
 let analyzing = false;
+let analyzeDone = null;   // 批次「全部辨識」用：這一張辨識結束（成功或失敗）時呼叫
 
 /* =============================================================
    PDF：一次只處理一頁（表格結構跨頁拆開會亂），逐頁辨識、逐頁匯出
@@ -890,17 +893,46 @@ let analyzing = false;
 const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs';
 let pdfjsLib = null;
 const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs';
-let pdfDoc = null, pdfPage = 1, pdfName = '';
+let pdfDoc = null, pdfPage = 1, pdfName = '', pdfFile = null;
 
 function renderPdfNav() {
   const bar = document.getElementById('pdf-nav');
   const info = document.getElementById('pdf-page-info');
   if (!bar) return;
-  bar.style.display = pdfDoc ? 'flex' : 'none';
+  // 批次裡每一頁各佔一張（用批次晶片換頁），換頁列就不必了
+  bar.style.display = pdfDoc && batch.length <= 1 ? 'flex' : 'none';
+  const all = document.getElementById('pdf-all-btn');
+  if (all) all.style.display = pdfDoc && pdfDoc.numPages > 1 ? '' : 'none';
   if (info && pdfDoc) info.textContent = `第 ${pdfPage} / ${pdfDoc.numPages} 頁`;
 }
 
-async function openPdf(file) {
+// 多頁 PDF 在批次裡攤開成一頁一張：每頁各自辨識、驗算、進總表
+function expandPdfPages(i) {
+  const it = batch[i];
+  if (!it || it.page || !pdfDoc || pdfDoc.numPages < 2) return;
+  const base = it.name;
+  it.page = 1;
+  it.name = `${base} p.1`;
+  batch.splice(i + 1, 0, ...Array.from({ length: pdfDoc.numPages - 1 }, (_, k) => (
+    { file: it.file, name: `${base} p.${k + 2}`, page: k + 2, result: null, status: 'pending' })));
+  renderBatchBar();
+}
+
+// 單一份多頁 PDF：攤成批次後整份跑完
+function pdfAllPages() {
+  if (!pdfDoc || !pdfFile || pdfDoc.numPages < 2) return;
+  if (batch.length <= 1) {
+    batch = [{ file: pdfFile, name: pdfFile.name || 'document.pdf', result: null, status: 'pending' }];
+    batchIndex = 0;
+    expandPdfPages(0);
+    batchIndex = pdfPage - 1;
+    renderPdfNav();
+  }
+  batchRunAll();
+}
+
+async function openPdf(file, pageNo = 1) {
+  if (pdfDoc && pdfFile === file) { await renderPdfPage(pageNo); return; }   // 同一份換頁，不必重新解析
   const hint = document.getElementById('crop-hint');
   if (hint) hint.textContent = '載入 PDF（第一次需要下載 pdf.js）…';
   try {
@@ -909,11 +941,14 @@ async function openPdf(file) {
     pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
     pdfDoc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
     pdfName = (file.name || 'document.pdf').replace(/\.pdf$/i, '');
-    await renderPdfPage(1);
+    pdfFile = file;
+    if (batch.length > 1 && batch[batchIndex]?.file === file) expandPdfPages(batchIndex);
+    await renderPdfPage(pageNo);
   } catch (err) {
     pdfDoc = null;
     renderPdfNav();
     if (hint) hint.textContent = `無法讀取 PDF：${err.message || err}（可先自行截圖）`;
+    analyzeDone?.();   // 批次「全部辨識」在等這一張：失敗也要放行
   }
 }
 
@@ -944,6 +979,10 @@ function pdfTextWords(items, viewport) {
         ys.push(m[5] + uy * t - ux * s);
       }
       const x1 = Math.min(...xs), x2 = Math.max(...xs), y1 = Math.min(...ys), y2 = Math.max(...ys);
+      // 粗體常用「同一串字在原地（或偏一點點）再畫一次」做出來，文字層裡就有兩份；
+      // 不去掉會併成「208,949,201 208,949,201」，整格變成看不懂的數字
+      const tol = fontSize * 0.15;
+      if (out.some(o => o.text === part[0] && Math.abs(o.x1 - x1) < tol && Math.abs(o.y1 - y1) < tol)) continue;
       out.push({
         text: part[0], x1, x2, y1, y2,
         // h 是「字高」不是框高：轉向的字框很長，拿去算列距會把整張表的列併在一起
@@ -962,7 +1001,7 @@ function pdfTextWords(items, viewport) {
    遇到再加「整頁大圖蓋在文字上」的判斷（要追 CTM）。 */
 function textLayerGarbled(words) {
   const text = words.map(w => w.text).join('');
-  const bad = (text.match(/[�-\u0000-\u001f]/g) || []).length;
+  const bad = (text.match(/[\ufffd\ue000-\uf8ff\u0000-\u001f]/g) || []).length;
   return bad > text.length * 0.1;
 }
 
@@ -1052,12 +1091,13 @@ async function renderPdfPage(n) {
     renderPdfNav();
   } catch (err) {
     if (hint) hint.textContent = `第 ${target} 頁轉換失敗：${err.message || err}`;
+    analyzeDone?.();
   }
 }
 
 function loadFile(file, opts = {}) {
   if (file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''))) {
-    openPdf(file);               // 非同步；載入完成後會自己呼叫 loadFile(該頁 PNG)
+    openPdf(file, opts.page);    // 非同步；載入完成後會自己呼叫 loadFile(該頁 PNG)
     return;
   }
   if (!opts.fromPdf && file && !file.type.startsWith('image/')) {
@@ -1347,10 +1387,11 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v50';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v52';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
+let tableExact = false;   // 這張表取自 PDF 文字層：cellBoxes 的座標精確，可以拿科目縮排做層級驗算
 let pendingText = null;   // 這一頁的 PDF 文字層：{ words, size, blob, suspect }
 let useTextLayer = false; // 用文字層還是 OCR（文字層可疑時預設 OCR；摘要上的按鈕可切換）
 
@@ -1657,20 +1698,22 @@ function buildTable(words, grid) {
   });
 
   // 框跨過格線（右對齊項次緊貼左對齊科目）→ 依線拆回兩格
-  if (vLines.length) words = words.flatMap(w => splitBoxAtLine(w, vLines));
+  // PDF 文字層（exact）不拆：向量文字不會壓在真的格線上，跨過「線的延伸」的一定是
+  // 合併儲存格的表頭（「本年度預算數」橫跨金額與％兩欄），拆了反而變成「本年度預｜算數」
+  if (vLines.length && !grid?.exact) words = words.flatMap(w => splitBoxAtLine(w, vLines));
 
   // 格線是最可靠的欄界：先記下每個框落在第幾條直線之間（seg），之後不跨線合併、也不跨線併欄
   // 用轉正後的座標比對：線與文字都在同一張轉正圖上量的
-  // out：在表格外（最上與最下橫線之外）。直線延伸出去會把標題「113年度…明細表」分到幾個 seg，
+  // out：在表格上方（最上面那條橫線之上）。直線延伸出去會把標題「113年度…明細表」分到幾個 seg，
   // 開頭的「113」又是數字，整列被當成資料列拿去切欄，多出只有標題碎片的空欄。
-  // 所以表格外的字照距離合併（不管 seg），那幾列也不拿來切欄
+  // 所以表格上方的字照距離合併（不管 seg），那幾列也不拿來切欄。
+  // 只看上方：很多報表只有表頭上下兩條線，資料列全在「最下面那條線」之下，不能當成表格外
   // ponytail: 先只用在 PDF 文字層（exact）；OCR 路徑同理，但要跑過 bench 再放開
-  const top = hLines[0], bottom = hLines[hLines.length - 1];
+  const top = hLines[0];
   words = words.map(w => ({
     ...w, ox: w.cx, oy: w.cy,
     seg: vLines.reduce((n, l) => n + (l.a + l.b * w.cy < w.cx ? 1 : 0), 0),
-    out: !!grid?.exact && hLines.length >= 2
-      && (w.cy < top.a + top.b * w.cx || w.cy > bottom.a + bottom.b * w.cx),
+    out: !!grid?.exact && hLines.length >= 2 && w.cy < top.a + top.b * w.cx,
   }));
 
   // 校正歪斜：手機拍照很少完全水平。在 ±15° 內找出讓文字框「排成列」最整齊的角度
@@ -1961,6 +2004,7 @@ async function analyzeImage() {
     rememberTemplate();   // 換表之前先記下上一張的驗算設定
     tableData = stripped.data;
     cellBoxes = built.boxes || [];   // 每格在轉正圖上的像素範圍（給原圖對照用）
+    tableExact = fromTextLayer;
     cellSpans = built.spans || [];
     cellConfidence = built.confidence;
     cellRepairs = new Map([...repaired.repairs, ...stripped.repairs].map(x => [x.r + ',' + x.c, x]));
@@ -2029,6 +2073,7 @@ async function analyzeImage() {
     if (batch.length > 1 && batchIndex >= 0) { batch[batchIndex].status = 'error'; renderBatchBar(); }
   } finally {
     analyzing = false;
+    analyzeDone?.();
     spinner.style.display = 'none';
     // 直接跳到結果。原本的平滑捲動在版面剛變動時會被瀏覽器取消，結果留在畫面外沒人看到
     ws.scrollIntoView({ block: 'start' });
@@ -2053,6 +2098,7 @@ function resetAll() {
   smartSuspects = [];
   undoStack.length = 0;      // 換下一張表，上一張的復原紀錄不該留著
   cellBoxes = [];
+  tableExact = false;
   hideCellPeek();
   reviewPos = -1;
   renderUndoButton();
@@ -2545,6 +2591,21 @@ function jumpToCell(r, c) {
   selectCellText(td);
 }
 
+// 科目欄＝文字格最多的那一欄；縮排＝那一格文字的左緣
+function hierarchyCheck(percentCols) {
+  if (!tableExact || cellBoxes.length !== tableData.length || typeof SmartTotals.hierarchy !== 'function') return null;
+  const ncols = Math.max(...tableData.map(r => r.length), 0);
+  let labelCol = 0, most = -1;
+  for (let c = 0; c < ncols; c++) {
+    const n = tableData.filter(r => String(r?.[c] ?? '').trim() && isNaN(Validator._num(r[c])) && !/^[-－]$/.test(String(r[c]).trim())).length;
+    if (n > most) { most = n; labelCol = c; }
+  }
+  return SmartTotals.hierarchy(tableData, tableData.map((_, r) => cellBoxes[r]?.[labelCol]?.x1 ?? null), {
+    parse: v => Validator._num(v),
+    tolerance: SMART_TOL_ABS, labelCol, percentCols, headerRows: headerRowCount(),
+  });
+}
+
 function runSmartTotals(showEmpty = false) {
   if (!tableData.length) return;
   if (typeof SmartTotals === 'undefined') {
@@ -2573,8 +2634,23 @@ function runSmartTotals(showEmpty = false) {
     numericCols, percentCols,
     extraTotalRows: [...manualTotalRows],
   });
+  // 層級驗算（PDF 文字層才有夠準的科目縮排）：財務報表的上層科目＝下層加總、
+  // 賸餘＝收入−費用。這種表用「合計列＝上面全部加總」去驗只會整片誤報，
+  // 所以驗得出層級時，平面加總對不上的格子不算錯（對得上的照樣算相符）
+  const hier = hierarchyCheck(percentCols);
+  if (hier && hier.confirmed.length + hier.unconfirmed.length >= 3) {
+    const rows = new Set(hier.totalRows.map(t => t.r));
+    const flatOk = info.confirmed.filter(h => !rows.has(h.r));
+    const flatRows = info.totalRows.filter(t => flatOk.some(h => h.r === t.r));
+    info.confirmed = [...hier.confirmed, ...flatOk];
+    info.unconfirmed = hier.unconfirmed;
+    info.totalRows = [...hier.totalRows, ...flatRows].sort((a, b) => a.r - b.r);
+    info.unverifiable = hier.unverifiable;
+    info.hier = true;
+    delete info.implicit;
+  }
   smartUnparsed = unparsedNumericCells(tableData);
-  smartSuspects = suspiciousTotalRows(tableData, new Set(info.totalRows.map(t => t.r)));
+  smartSuspects = info.hier ? [] : suspiciousTotalRows(tableData, new Set(info.totalRows.map(t => t.r)));
   smartMarks.clear();
   info.confirmed.forEach(hit => smartMarks.add(hit.r + ',' + hit.c));
   smartBad.clear();
@@ -2634,6 +2710,14 @@ function renderSmartNote() {
         ? `❌ <strong>自動驗算：${unconfirmed.length} 格合計不符</strong>，另 ${confirmed.length} 格相符`
         : `✅ <strong>自動驗算：${confirmed.length} 格合計全部相符</strong>`)
       + `（共 ${totalRows.length} 個合計列）。可直接修改數字或點欄/列手動調整。`;
+    if (smartInfo.hier) {
+      html += '<div class="chip-note" style="margin-top:4px">📐 依科目縮排做<strong>層級驗算</strong>：'
+        + '上層科目＝下層加總、賸餘／餘額＝同層各列加減。'
+        + (smartInfo.unverifiable.length
+          ? `另有 ${smartInfo.unverifiable.length} 格（${escapeHtml([...new Set(smartInfo.unverifiable.map(x => x.label))].slice(0, 3).join('、'))}）`
+            + '的子項一路排到頁尾，可能接續下一頁，<strong>沒有驗</strong>。'
+          : '') + '</div>';
+    }
     if (unconfirmed.length) {
       const items = unconfirmed.slice(0, 6).map(x => {
         const near = x.candidates.slice()
@@ -2961,7 +3045,36 @@ function batchStep(delta) {
   const item = batch[batchIndex];
   renderBatchBar();
   if (item.result) { restoreBatchResult(item.result); return; }
-  loadFile(item.file, { fromBatch: true });
+  loadFile(item.file, { fromBatch: true, page: item.page });
+}
+
+// 全部辨識：把還沒處理的一張一張自動跑完（多頁 PDF 會先攤成一頁一張），跑完開總表。
+// 執行中再按一次＝停在目前這張
+let batchRunning = false;
+async function batchRunAll() {
+  if (batchRunning) { batchRunning = false; renderBatchBar(); return; }
+  batchRunning = true;
+  const wasAuto = autoAnalyze;
+  autoAnalyze = true;   // 沒開「自動辨識」也要跑
+  try {
+    for (let i = 0; i < batch.length && batchRunning; i++) {
+      const item = batch[i];
+      if (item.status !== 'pending') continue;
+      const done = new Promise(resolve => { analyzeDone = () => resolve(true); });
+      if (i === batchIndex) loadFile(item.file, { fromBatch: true, page: item.page });
+      else batchJump(i);
+      // 掃描頁第一次要下載 OCR 模型，給寬一點；真的卡住就標成失敗繼續下一張
+      const ok = await Promise.race([done, new Promise(resolve => setTimeout(() => resolve(false), 300000))]);
+      if (!ok || item.status === 'pending') item.status = 'error';
+    }
+  } finally {
+    analyzeDone = null;
+    autoAnalyze = wasAuto;
+    batchRunning = false;
+    saveBatchResult();
+    renderBatchBar();
+    toggleBatchSummary(true);
+  }
 }
 
 // 把目前這張的結果存起來（沒有結果就不存，例如還沒辨識完）
@@ -2974,6 +3087,7 @@ function saveBatchResult() {
     rows: tableData.map(r => r.slice()),
     conf: cellConfidence.map(r => r.slice()),
     boxes: cellBoxes.map(r => r.map(b => (b ? { ...b } : null))),
+    exact: tableExact,
     spans: cellSpans.map(r => r.map(s => (s ? { ...s } : null))),
     repairs: [...cellRepairs.entries()],
     json: null,
@@ -2984,6 +3098,7 @@ function restoreBatchResult(result) {
   tableData = result.rows.map(r => r.slice());
   cellConfidence = result.conf.map(r => r.slice());
   cellBoxes = result.boxes.map(r => r.map(b => (b ? { ...b } : null)));
+  tableExact = !!result.exact;
   cellSpans = result.spans.map(r => r.map(s => (s ? { ...s } : null)));
   cellRepairs = new Map(result.repairs);
   manualTotalRows.clear();
@@ -3131,6 +3246,8 @@ function renderBatchBar() {
   const bad = batch.filter(b => b.status === 'bad').length;
   const todo = batch.filter(b => b.status === 'pending').length;
   document.getElementById('batch-title').textContent = `📚 批次 ${batch.length} 張`;
+  document.getElementById('batch-run').textContent = batchRunning ? '⏸ 停止' : '▶ 全部辨識';
+  document.getElementById('batch-run').style.display = todo || batchRunning ? '' : 'none';
   document.getElementById('batch-hint').textContent =
     `目前第 ${batchIndex + 1} 張　✅ ${ok}　❌ ${bad}${todo ? `　待處理 ${todo}` : ''}　`
     + '（同一格式的表格會沿用上一張的驗算設定）';
@@ -3150,7 +3267,7 @@ function batchJump(i) {
   batchIndex = i;
   renderBatchBar();
   if (item.result) restoreBatchResult(item.result);
-  else loadFile(item.file, { fromBatch: true });
+  else loadFile(item.file, { fromBatch: true, page: item.page });
 }
 
 /* =============================================================
@@ -3230,6 +3347,7 @@ function applyTable(grid, opts = {}) {
   tableData = stripped.data;
   cellConfidence = tableData.map(r => r.map(() => 1));
   cellBoxes = [];
+  tableExact = false;
   cellSpans = [];
   cellRepairs = new Map([...repaired.repairs, ...stripped.repairs].map(x => [x.r + ',' + x.c, x]));
   manualTotalRows.clear();

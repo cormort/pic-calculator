@@ -47,6 +47,11 @@ near(w.h, 22, "h 是字高不是框高");
 // 5) 康熙部首 → 一般漢字（NFKC）
 assert.strictEqual(pdfTextWords([item("⾦額", 0, 0, 20)], viewport)[0].text, "金額");
 
+// 5b) 粗體重複畫兩次的字只留一份；位置不同的同一個數字要留著
+const dup = pdfTextWords([item("100.00", 100, 700, 30), item("100.00", 100.2, 700, 30),
+  item("100.00", 300, 700, 30)], viewport);
+assert.strictEqual(dup.length, 2, "原地重複的字去掉、別處的同字保留");
+
 // 6) 亂碼文字層
 const ws = (t) => [{ text: t }];
 assert.strictEqual(textLayerGarbled(ws("經費明細表 50,000 合計")), false);

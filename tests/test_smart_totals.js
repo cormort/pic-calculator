@@ -208,4 +208,68 @@ const mulZero = SmartTotals.multiplyCheck(
 );
 assert.deepStrictEqual(mulZero.failed, []);
 
+// 「填補短絀」是項目不是結果列；逐段累計（上一個合計列＋之後各列）要驗得過
+assert.strictEqual(SmartTotals.isTotalLabel("增加基金、公積及填補短絀"), false);
+assert.strictEqual(SmartTotals.isTotalLabel("本期短絀"), true);
+{
+  const cf = [["項目", "金額"], ["本期賸餘(短絀)", "41,317,325"], ["利息股利之調整", "-52,589,978"],
+    ["未計利息股利之本期賸餘(短絀)", "-11,272,653"]];
+  const r = SmartTotals.evaluate(cf, { parse: parseNum, tolerance, numericCols: [1] });
+  assert.ok(r.confirmed.some((h) => h.r === 3) && !r.unconfirmed.length, "逐段累計應相符");
+}
+
+// ---- 層級驗算：科目縮排表示上下層（收支餘絀表） ----
+{
+  const is = [
+    ["科目", "本年度", "%", "上年度", "前年度"],
+    ["業務收入", "1,000", "100.00", "900", "800"],
+    ["勞務收入", "-", "-", "-", "-"],
+    ["投融資業務收入", "700", "70.00", "600", "500"],
+    ["其他業務收入", "300", "30.00", "300", "300"],
+    ["業務成本與費用", "400", "40.00", "350", "300"],
+    ["業務費用", "390", "39.00", "341", "290"],
+    ["管理及總務費用", "10", "1.00", "9", "10"],
+    ["業務賸餘(短絀)", "600", "60.00", "550", "500"],
+    ["業務外收入", "50", "5.00", "40", "30"],
+    ["業務外費用", "20", "2.00", "10", "-"],
+    ["業務外賸餘(短絀)", "30", "3.00", "30", "30"],
+    ["本期賸餘(短絀)", "630", "63.00", "580", "530"],
+  ];
+  const indents = [null, 62, 82, 82, 82, 62, 82, 82, 62, 62, 62, 62, 62];
+  const opts = { parse: parseNum, tolerance: 2, labelCol: 0, percentCols: new Set([2]), headerRows: 1 };
+  const ok = SmartTotals.hierarchy(is, indents, opts);
+  assert.strictEqual(ok.unconfirmed.length, 0, "正確的表不該有不符");
+  // 2 個上層 × 3 欄（H1）＋ 3 個結果列 × 3 欄（H2）；百分比欄不驗
+  assert.strictEqual(ok.confirmed.length, 15);
+  assert.ok(ok.confirmed.every((h) => h.c !== 2), "百分比欄不驗");
+  assert.deepStrictEqual(ok.totalRows.map((t) => t.r), [1, 5, 8, 11, 12]);
+
+  // 下層數字錯 → 上層那一格不符，試算值是下層加總
+  const badKid = is.map((r) => r.slice());
+  badKid[3][1] = "750";
+  const r1 = SmartTotals.hierarchy(badKid, indents, opts);
+  assert.deepStrictEqual(r1.unconfirmed.map((h) => [h.r, h.c, h.candidates[0]]), [[1, 1, 1050]]);
+
+  // 結果列只有一欄對不上（其他欄都符合「收入−費用」）→ 標那一格
+  const badRes = is.map((r) => r.slice());
+  badRes[8][3] = "555";
+  const r2 = SmartTotals.hierarchy(badRes, indents, opts);
+  assert.ok(r2.unconfirmed.some((h) => h.r === 8 && h.c === 3 && h.candidates[0] === 550), "業務賸餘上年度應為 550");
+
+  // 對不上的那一格寫的是「-」（正負號互換時不列增減）：不下結論
+  const dash = is.map((r) => r.slice());
+  dash[8][3] = "-";
+  assert.ok(!SmartTotals.hierarchy(dash, indents, opts).unconfirmed.some((h) => h.r === 8));
+
+  // 子項一路排到頁尾又對不上：可能跨頁，列為無法驗而不是錯
+  const cut = is.slice(0, 4);
+  const r3 = SmartTotals.hierarchy(cut, indents.slice(0, 4), opts);
+  assert.strictEqual(r3.unconfirmed.length, 0);
+  assert.strictEqual(r3.unverifiable.length, 3);
+
+  // 沒有科目欄（跨頁寬表的右半）→ 不驗
+  const noLabel = is.slice(1).map((r) => r.slice(1));
+  assert.strictEqual(SmartTotals.hierarchy(noLabel, indents.slice(1), { ...opts, headerRows: 0 }), null);
+}
+
 console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷、乘法關係（單價×數量）");
