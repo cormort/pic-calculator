@@ -354,6 +354,11 @@
   </div>
 
   <div id="camera-section">
+    <div class="quality-row" id="camera-devices-row" style="display:none; margin-bottom:10px;">
+      <label for="camera-device">視訊來源</label>
+      <select id="camera-device" onchange="onCameraDeviceChange(this.value)"></select>
+      <span class="note" id="camera-info"></span>
+    </div>
     <video id="video" autoplay playsinline></video>
     <div class="btn-row" style="margin-top:12px;">
       <button class="btn" onclick="capturePhoto()">📸 拍照</button>
@@ -962,6 +967,82 @@ function rotateImage(dir) {
   c.toBlob(b => { if (b) loadFile(new File([b], name, { type })); else alert('圖片太大，無法旋轉'); }, type, 0.95);
 }
 
+// 上次選的視訊來源（USB 攝影機、外接擷取卡等；換裝置時會記住）
+let cameraDeviceId = '';
+try { cameraDeviceId = localStorage.getItem('pcCameraId') || ''; } catch (err) { /* 忽略 */ }
+
+function cameraConstraints(deviceId) {
+  const video = {
+    width: { ideal: 2560 },
+    height: { ideal: 1440 },
+    // 文件翻拍想吃「連續對焦」；不支援的裝置會忽略 advanced（不會報錯）
+    advanced: [{ focusMode: 'continuous' }],
+  };
+  if (deviceId) video.deviceId = { exact: deviceId };
+  else video.facingMode = { ideal: 'environment' };   // 手機優先後鏡頭；桌機忽略
+  return { video };
+}
+
+async function startCamera(deviceId = cameraDeviceId) {
+  const sec = document.getElementById('camera-section');
+  stopCamera();
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(cameraConstraints(deviceId));
+  } catch (err) {
+    // 記住的裝置不在了（拔掉 USB、換機器）→ 退回預設鏡頭再試一次
+    if (deviceId && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
+      cameraDeviceId = '';
+      try { localStorage.removeItem('pcCameraId'); } catch (e2) { /* 忽略 */ }
+      try { stream = await navigator.mediaDevices.getUserMedia(cameraConstraints('')); } catch (err2) { err = err2; }
+    }
+    if (!stream) {
+      let msg = '無法存取相機：' + err.message;
+      if (err.name === 'NotAllowedError') msg += '\n\n請在瀏覽器設定中允許相機權限';
+      if (err.name === 'NotFoundError') msg += '\n\n找不到相機設備（USB 攝影機有插好嗎？）';
+      alert(msg);
+      return null;
+    }
+  }
+  cameraStream = stream;
+  const track = stream.getVideoTracks()[0];
+  const settings = (track && track.getSettings && track.getSettings()) || {};
+  // 只有「沒指定裝置」時才採用瀏覽器選的裝置；使用者明確選過的不要被覆寫
+  if (!deviceId && settings.deviceId) cameraDeviceId = settings.deviceId;
+  document.getElementById('video').srcObject = stream;
+  sec.style.display = 'block';
+  document.getElementById('camera-btn').textContent = '✕ 關閉相機';
+  const info = document.getElementById('camera-info');
+  if (info) {
+    const label = track && track.label ? track.label : '預設鏡頭';
+    info.textContent = settings.width
+      ? `${label}（擷取 ${settings.width}×${settings.height}）`
+      : label;
+  }
+  refreshCameraList();
+  return stream;
+}
+
+// 列出所有視訊來源：有兩台以上才顯示選單（USB 攝影機＋內建鏡頭很常見）
+async function refreshCameraList() {
+  const row = document.getElementById('camera-devices-row');
+  const sel = document.getElementById('camera-device');
+  if (!row || !sel || !navigator.mediaDevices?.enumerateDevices) return;
+  let devices = [];
+  try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput'); } catch (err) { return; }
+  if (devices.length < 2) { row.style.display = 'none'; return; }
+  sel.innerHTML = devices.map((d, i) =>
+    `<option value="${d.deviceId}">${escapeHtml(d.label || `攝影機 ${i + 1}`)}</option>`).join('');
+  if (cameraDeviceId && devices.some(d => d.deviceId === cameraDeviceId)) sel.value = cameraDeviceId;
+  row.style.display = 'flex';
+}
+
+function onCameraDeviceChange(id) {
+  cameraDeviceId = id;
+  try { localStorage.setItem('pcCameraId', id); } catch (err) { /* 忽略 */ }
+  startCamera(id);
+}
+
 async function toggleCamera() {
   const sec = document.getElementById('camera-section');
   if (sec.style.display === 'block') { stopCamera(); return; }
@@ -970,17 +1051,14 @@ async function toggleCamera() {
     alert('此瀏覽器不支援相機存取。\n\n請確保：\n1. 使用 HTTPS 連線\n2. 或在網址列點擊鎖頭圖示允許相機權限\n3. 行動裝置需點擊右上角設定 → 允許相機');
     return;
   }
-  try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 2560 }, height: { ideal: 1440 } } });
-    document.getElementById('video').srcObject = cameraStream;
-    sec.style.display = 'block';
-    document.getElementById('camera-btn').textContent = '✕ 關閉相機';
-  } catch (err) {
-    let msg = '無法存取相機：' + err.message;
-    if (err.name === 'NotAllowedError') msg += '\n\n請在瀏覽器設定中允許相機權限';
-    if (err.name === 'NotFoundError') msg += '\n\n找不到相機設備';
-    alert(msg);
-  }
+  await startCamera();
+}
+
+// 插拔 USB 攝影機時更新選單
+if (navigator.mediaDevices?.addEventListener) {
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    if (document.getElementById('camera-section').style.display === 'block') refreshCameraList();
+  });
 }
 function stopCamera() {
   if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
@@ -1088,7 +1166,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v29';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v30';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
