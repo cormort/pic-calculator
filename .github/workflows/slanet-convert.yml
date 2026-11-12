@@ -24,10 +24,12 @@ jobs:
             p2o: "1.0.8"
             py: "3.11"
             label: paddle2onnx-1.0.8
+          # 1.0.5 的 cp311 wheel 只有 aarch64 版，x86_64 的 py3.11 裝不到（pip 直接回 no matching
+          # distribution）→ 同一個 1.0.8 改在 py3.10 再跑一次，確認不是 python 版本的問題
           - paddle: "2.6.2"
-            p2o: "1.0.5"
-            py: "3.11"
-            label: paddle2onnx-1.0.5
+            p2o: "1.0.8"
+            py: "3.10"
+            label: paddle2onnx-1.0.8-py310
           - paddle: "3.0.0"
             p2o: "2.1.0"
             py: "3.12"
@@ -43,11 +45,16 @@ jobs:
       - name: 安裝 ${{ matrix.label }}
         run: |
           python -m pip install --upgrade pip
+          # paddle 2.6 需要 six（新一點的 pip 不會自動帶），paddle 3.x 需要 setuptools
+          # 才有 pkg_resources —— 少了這兩個，import paddle 會直接 ModuleNotFoundError
           pip install "paddlepaddle==${{ matrix.paddle }}" "paddle2onnx==${{ matrix.p2o }}" \
-                      onnx onnxruntime pillow numpy
+                      onnx onnxruntime pillow numpy six setuptools protobuf
 
       - name: 轉檔並驗收（3×4→15 格、4×4→20 格、不含 Loop）
         run: |
+          # set -o pipefail 是必要的：少了它，`python ... | tee` 的結束碼是 tee 的 0，
+          # 轉檔失敗的工作照樣綠燈，然後上傳步驟才說「找不到檔案」（實測踩過）
+          set -o pipefail
           python bench/experiments/convert_slanet.py \
             --out slanet_plus_${{ matrix.label }}.onnx \
             --workdir /tmp/slanet_convert | tee convert.log
