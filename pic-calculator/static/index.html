@@ -434,7 +434,18 @@
         <button class="btn btn-outline btn-sm" onclick="batchStep(-1)">◀ 上一張</button>
         <button class="btn btn-outline btn-sm" onclick="batchStep(1)">下一張 ▶</button>
         <span class="note" id="batch-hint"></span>
+        <button class="btn btn-outline btn-sm" onclick="toggleBatchSummary()">📊 批次總表</button>
         <div id="batch-chips" style="display:flex; gap:6px; flex-wrap:wrap; width:100%;"></div>
+      </div>
+    </div>
+
+    <!-- 批次總表：每張一列，可匯出 CSV 當檢查紀錄 -->
+    <div class="card" id="batch-summary-card" style="display:none;">
+      <div class="card-header">
+        <span>📊 批次檢查總表</span>
+        <button class="btn btn-outline btn-sm" onclick="downloadBatchCsv()">⬇️ 匯出 CSV</button>
+      </div>
+      <div class="card-body" id="batch-summary-body"></div>
       </div>
     </div>
     <!-- 摘要 -->
@@ -1285,7 +1296,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v41';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v43';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1908,6 +1919,7 @@ async function analyzeImage() {
     setPreviewCollapsed(true);
     if (batch.length > 1 && batchIndex >= 0) {
       batch[batchIndex].status = batchStatusOf();
+      batch[batchIndex].stats = currentTableStats();
       renderBatchBar();
     }
   } catch (err) {
@@ -2302,6 +2314,9 @@ function unparsedNumericCells(table = tableData, headerRows = headerRowCount()) 
       if (!raw) continue;
       if (!isNaN(Validator._num(raw))) continue;
       if (/^[-–—－‐—/]+$/.test(raw)) continue;      // 破折號＝沒有值，不算錯
+      // 完全沒有數字的是文字標籤（小計、合計、人事費），不是「看不懂的數字」——
+      // 把它們列進來只會讓提醒變成噪音（實測：項次欄的小計/合計被誤報）
+      if (!/\d/.test(raw)) continue;
       out.push({ r, c, text: raw });
     }
   }
@@ -2846,6 +2861,7 @@ function saveBatchResult() {
   if (batchIndex < 0 || batchIndex >= batch.length) return;
   if (!tableData.length) return;
   batch[batchIndex].status = batchStatusOf();   // 結算這一張的驗算狀態
+  batch[batchIndex].stats = currentTableStats();
   batch[batchIndex].result = {
     rows: tableData.map(r => r.slice()),
     conf: cellConfidence.map(r => r.slice()),
@@ -2872,7 +2888,10 @@ function restoreBatchResult(result) {
   renderTable();
   renderReviewButton();
   runSmartTotals(true);      // 重算驗算與狀態（便宜、且會更新晶片）
-  if (batch.length > 1 && batchIndex >= 0) batch[batchIndex].status = batchStatusOf();
+  if (batch.length > 1 && batchIndex >= 0) {
+    batch[batchIndex].status = batchStatusOf();
+    batch[batchIndex].stats = currentTableStats();
+  }
   renderBatchBar();
   setPreviewCollapsed(true);
 }
@@ -2884,6 +2903,115 @@ function batchStatusOf() {
   if (bad) return 'bad';
   if (smartInfo.totalRows && smartInfo.totalRows.length) return 'ok';
   return 'warn';
+}
+
+// 這一張的檢查數據（總表用；也順便當狀態來源）
+function currentTableStats() {
+  const totals = (smartInfo && smartInfo.totalRows) ? smartInfo.totalRows.length : 0;
+  const bad = (smartInfo && smartInfo.unconfirmed) ? smartInfo.unconfirmed.length : 0;
+  const mul = (smartMultiply && smartMultiply.failed) ? smartMultiply.failed.length : 0;
+  // 差異總額：合計不符取「最接近的那個試算值」差額，乘法不符取與期望值的差額
+  let diff = 0;
+  (smartInfo && smartInfo.unconfirmed ? smartInfo.unconfirmed : []).forEach(x => {
+    const near = (x.candidates || []).slice().sort((a, b) => Math.abs(a - x.actual) - Math.abs(b - x.actual))[0];
+    if (Number.isFinite(near)) diff += Math.abs(x.actual - near);
+  });
+  (smartMultiply && smartMultiply.failed ? smartMultiply.failed : []).forEach(f => {
+    if (Number.isFinite(f.expected)) diff += Math.abs(f.actual - f.expected);
+  });
+  return {
+    rows: tableData.length,
+    cols: tableData.length ? Math.max(...tableData.map(r => r.length)) : 0,
+    totals, bad, mul, diff,
+    low: lowConfidenceCount(),
+    badNum: (smartUnparsed || []).length,
+    status: batchStatusOf(),
+  };
+}
+
+function toggleBatchSummary(force) {
+  const card = document.getElementById('batch-summary-card');
+  if (!card) return;
+  const show = force === undefined ? card.style.display !== 'block' : !!force;
+  card.style.display = show ? 'block' : 'none';
+  if (show) { renderBatchSummary(); card.scrollIntoView({ block: 'nearest' }); }
+}
+
+function batchRows() {
+  return batch.map((b, i) => {
+    const st = b.stats || (i === batchIndex && tableData.length ? currentTableStats() : null);
+    return { no: i + 1, name: b.name, status: b.status, stats: st };
+  });
+}
+
+function batchCsvText() {
+  const head = ['#', '檔名', '狀態', '列', '欄', '驗算格數', '不符格數', '差異總額', '低信心格', '看不懂的數字格'];
+  const zh = { ok: '驗算通過', bad: '有問題', warn: '沒驗到合計', error: '辨識失敗', pending: '未處理' };
+  const cell = (v) => {
+    const t = String(v ?? '');
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const lines = [head.join(',')];
+  for (const r of batchRows()) {
+    const s = r.stats || {};
+    lines.push([r.no, r.name, zh[r.status] || r.status, s.rows ?? '', s.cols ?? '',
+      s.totals ?? '', s.bad ?? '', s.diff ? Math.round(s.diff) : '', s.low ?? '', s.badNum ?? '']
+      .map(cell).join(','));
+  }
+  return lines.join('\n');
+}
+
+function renderBatchSummary() {
+  const body = document.getElementById('batch-summary-body');
+  if (!body) return;
+  const rows = batchRows();
+  const done = rows.filter(r => r.status !== 'pending');
+  const ok = done.filter(r => r.status === 'ok').length;
+  const bad = done.filter(r => r.status === 'bad').length;
+  const warn = done.filter(r => r.status === 'warn' || r.status === 'error').length;
+  const html = rows.map(r => {
+    const s = r.stats || {};
+    const icon = r.status === 'ok' ? '✅' : r.status === 'bad' ? '❌' : r.status === 'warn' ? '⚠️'
+      : r.status === 'error' ? '💥' : '⏳';
+    const diff = s.diff ? fmtNum(Math.round(s.diff)) : '';
+    return `<tr>
+      <td style="text-align:center">${r.no}</td>
+      <td style="text-align:left">${escapeHtml(r.name)}</td>
+      <td style="text-align:center">${icon}</td>
+      <td>${s.rows ?? ''}</td><td>${s.cols ?? ''}</td>
+      <td>${s.totals ?? ''}</td>
+      <td class="${s.bad ? 'cell-error' : ''}">${s.bad ?? ''}</td>
+      <td class="${s.diff ? 'cell-error' : ''}">${diff}</td>
+      <td class="${s.low ? 'cell-low' : ''}">${s.low ?? ''}</td>
+      <td>${s.badNum ?? ''}</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = `
+    <p class="hint" style="margin-bottom:8px">
+      共 ${rows.length} 張：已處理 ${done.length} 張（✅ ${ok}　❌ ${bad}　⚠️/💥 ${warn}），
+      還有 ${rows.length - done.length} 張沒處理。點列表上的晶片可以跳到該張修正。
+    </p>
+    <div style="overflow:auto">
+      <table class="data" style="width:100%">
+        <thead><tr>
+          <th>#</th><th style="text-align:left">檔名</th><th>狀態</th><th>列</th><th>欄</th>
+          <th>驗算</th><th>不符</th><th>差異總額</th><th>低信心</th><th>看不懂</th>
+        </tr></thead>
+        <tbody>${html}</tbody>
+      </table>
+    </div>`;
+}
+
+function downloadBatchCsv() {
+  const text = batchCsvText();
+  const blob = new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `批次檢查-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function renderBatchBar() {
