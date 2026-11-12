@@ -68,4 +68,30 @@ assert.strictEqual(m3.rowSkipped, true);
 // 沒有任何設定可記 → null（呼叫端保留更早那一張的範本）
 assert.strictEqual(T.makeTemplate(jan, { col: empty(), row: empty() }, new Set(), labelOf), null);
 
-console.log("PASS  沿用上一張設定：欄數／表頭比對、合計列依標籤、列角色依科目");
+// 標點差異不該讓同一列對不上（OCR 常漏讀「、」；括號也常全形／半形混用）
+const punct = [
+  ["科目", "113年1月預算", "113年1月實支", "餘額"],
+  ["人事費", "1,000", "800", "200"],
+  ["業務費（含外包）", "500", "450", "50"],
+  ["小計", "1,500", "1,250", "250"],
+];
+const punctTpl = T.makeTemplate(punct, { col: empty(), row: { plus: [1, 2], minus: [], total: 3 } }, new Set(), labelOf);
+const punctNext = [
+  ["科目", "113年2月預算", "113年2月實支", "餘額"],
+  ["人事費", "1,000", "800", "200"],
+  ["業務費(含外包)", "500", "450", "50"],     // 全形括號 → 半形
+  ["小計", "1,500", "1,250", "250"],
+];
+assert.deepStrictEqual(T.matchTemplate(punctTpl, punctNext, labelOf).row,
+  { plus: [1, 2], minus: [], total: 3 });
+
+// 科目名稱漏讀「、」也要對得上
+const commaTpl = T.makeTemplate(
+  [["科目", "金額"], ["不動產、廠房及設備", "100"], ["合計", "100"]],
+  { col: { plus: [1], minus: [], total: null }, row: { plus: [1], minus: [], total: 2 } },
+  new Set(), labelOf);
+assert.deepStrictEqual(
+  T.matchTemplate(commaTpl, [["科目", "金額"], ["不動產廠房及設備", "100"], ["合計", "100"]], labelOf).row,
+  { plus: [1], minus: [], total: 2 });
+
+console.log("PASS  沿用上一張設定：欄數／表頭比對、合計列依標籤、列角色依科目、標點差異");

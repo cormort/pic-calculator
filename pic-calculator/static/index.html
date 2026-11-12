@@ -392,8 +392,10 @@
       <div class="card-header">
         <span>📊 辨識結果 (可直接點 cell 修改)</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-warn btn-sm" id="review-btn" style="display:none" onclick="reviewLowConfidence()">🔎 核對低信心</button>
+          <button class="btn btn-warn btn-sm" id="review-btn" style="display:none" onclick="reviewLowConfidence()">🔎 待核對</button>
+          <button class="btn btn-outline btn-sm" id="undo-btn" style="display:none" onclick="undoLast()" title="復原上一次格子修改（Ctrl/⌘+Z）">↩︎ 復原</button>
           <button class="btn btn-outline btn-sm" onclick="copyTable()">📋 複製表格</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCsv()" title="下載 CSV（UTF-8 BOM，Excel 直接開不會亂碼）">⬇️ 匯出 CSV</button>
           <button class="btn btn-outline btn-sm" onclick="resetAll()">🆕 重新辨識</button>
         </div>
       </div>
@@ -1386,6 +1388,9 @@ function resetAll() {
   manualTotalRows.clear();
   smartUnparsed = [];
   smartSuspects = [];
+  undoStack.length = 0;      // 換下一張表，上一張的復原紀錄不該留著
+  reviewPos = -1;
+  renderUndoButton();
   clearSmart();
   clearSelections();
 }
@@ -1578,7 +1583,9 @@ function onCellEdit(td) {
   const r = +td.dataset.r, c = +td.dataset.c;
   const newVal = td.innerText.trim();
   // 只點進去沒改內容：不重繪（否則下一下點擊的目標會被換掉）、不清驗算結果與低信心標示
-  if (newVal === String(tableData[r]?.[c] ?? '')) return;
+  const prevVal = String(tableData[r]?.[c] ?? '');
+  if (newVal === prevVal) return;
+  pushUndo(r, c, prevVal);
   while (tableData[r].length <= c) tableData[r].push('');
   tableData[r][c] = newVal;
   if (!cellConfidence[r]) cellConfidence[r] = [];
@@ -1709,8 +1716,12 @@ function confirmTotalRow(r) {
 function applyMultiplyFix(r, c, value) {
   if (!tableData[r]) return;
   while (tableData[r].length <= c) tableData[r].push('');
+  const prev = String(tableData[r][c] ?? '');
   const n = Number(value);
-  tableData[r][c] = isNaN(n) ? String(value) : n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const next = isNaN(n) ? String(value) : n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  if (next === prev) return;
+  pushUndo(r, c, prev);
+  tableData[r][c] = next;
   if (!cellConfidence[r]) cellConfidence[r] = [];
   while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
   cellConfidence[r][c] = 1;          // 人工確認過的格
@@ -1781,6 +1792,7 @@ function runSmartTotals(showEmpty = false) {
     || !!(smartMultiply && smartMultiply.checked > 0);
   renderTable();
   renderSmartNote();
+  renderReviewButton();   // 乘法／合計不符也要算進「待核對」的數字，否則按鈕上的數量會是舊的
 }
 
 function renderSmartNote() {
@@ -1886,13 +1898,18 @@ function renderSmartNote() {
 let lastTemplate = null;
 const rowLabelOf = row => SmartTotals.rowLabel(row, Validator._num);
 
+// 科目名稱比對忽略標點：OCR 常漏讀「、」（「不動產、廠房及設備」→「不動產廠房及設備」），
+// 而括號／全形半形混用也會讓同一列被當成不同列 —— 這些字元對「是哪一列」沒有語意。
+// （標點表刻意寫在函式內：tests/test_template.js 會單獨抽出這幾個函式來跑）
 function squashLabel(s) {
-  return String(s ?? '').replace(/\s+/g, '');
+  const punct = /[、，,。．.：:；;・·（）()「」『』\[\]【】\-–—_/\\|]/g;
+  return String(s ?? '').replace(/\s+/g, '').replace(punct, '');
 }
 
 // 表頭比對時忽略數字：年度、月份每張不同（「113年1月實支」→「年月實支」）
 function templateKey(s) {
-  return String(s ?? '').replace(/[\s\d]+/g, '');
+  const punct = /[、，,。．.：:；;・·（）()「」『』\[\]【】\-–—_/\\|]/g;
+  return String(s ?? '').replace(/[\s\d]+/g, '').replace(punct, '');
 }
 
 function makeTemplate(table, selection, totalRows, labelOf) {
@@ -2079,12 +2096,39 @@ function lowConfidenceCells() {
   return out;
 }
 
+/* 待核對清單：把「低信心」「看不出是數字」「合計不符」「乘法不符」合成一個佇列。
+   排序跟第一節的原則一致 —— 會破壞驗算的先看，純信心提示最後。
+   以前是三套流程（核對低信心／橫幅清單／自己找橘線），使用時要分別處理還容易漏。 */
+function reviewQueue() {
+  const seen = new Set(), out = [];
+  const push = (r, c, kind, note) => {
+    if (r === undefined || c === undefined) return;
+    const k = r + ',' + c;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ r, c, kind, note });
+  };
+  if (smartMultiply && smartMultiply.failed) {
+    smartMultiply.failed.forEach(f => push(f.r, smartMultiply.cols.amount, 'mul',
+      `乘法不符：單價 × 數量 ＝ ${fmtNum(f.expected)}，實際 ${fmtNum(f.actual)}`));
+  }
+  if (smartInfo && smartInfo.unconfirmed) {
+    smartInfo.unconfirmed.forEach(x => push(x.r, x.c, 'total',
+      `合計不符：試算 ${x.candidates.slice(0, 2).map(fmtNum).join(' / ')}，實際 ${fmtNum(x.actual)}`));
+  }
+  (smartUnparsed || []).forEach(x => push(x.r, x.c, 'badnum',
+    `「${x.text}」不像數字，已被排除在驗算外`));
+  lowConfidenceCells().forEach(x => push(x.r, x.c, 'low',
+    `OCR 信心 ${Math.round((Number(cellConfidence[x.r]?.[x.c]) || 0) * 100)}%，建議對照原圖`));
+  return out;
+}
+
 function renderReviewButton() {
   const btn = document.getElementById('review-btn');
   if (!btn) return;
-  const n = lowConfidenceCells().length;
+  const n = reviewQueue().length;
   btn.style.display = n ? 'inline-flex' : 'none';
-  btn.textContent = `🔎 核對低信心 (${n})`;
+  btn.textContent = `🔎 待核對 (${n})`;
 }
 
 function selectCellText(td) {
@@ -2096,10 +2140,15 @@ function selectCellText(td) {
 }
 
 function reviewLowConfidence() {
-  const list = lowConfidenceCells();
-  if (!list.length) { renderSummary({ kind: 'ok', text: '✅ 沒有信心不足的格子了。' }); return; }
+  const list = reviewQueue();
+  if (!list.length) {
+    renderSummary({ kind: 'ok', text: '✅ 沒有需要核對的格子了。' });
+    renderReviewButton();
+    return;
+  }
+  if (reviewPos >= list.length) reviewPos = -1;
   reviewPos = (reviewPos + 1) % list.length;
-  const { r, c } = list[reviewPos];
+  const { r, c, kind, note } = list[reviewPos];
   const td = document.querySelector(`#data-table td[data-r="${r}"][data-c="${c}"]`);
   if (!td) return;
   document.querySelectorAll('#data-table td.cell-review').forEach(el => el.classList.remove('cell-review'));
@@ -2107,8 +2156,46 @@ function reviewLowConfidence() {
   td.scrollIntoView({ block: 'center', inline: 'center' });
   td.focus();
   selectCellText(td);
-  document.getElementById('review-btn').textContent = `🔎 核對低信心 (${reviewPos + 1}/${list.length})`;
+  renderSummary({
+    kind: kind === 'low' ? 'info' : 'warn',
+    text: `第 ${r + 1} 列／第 ${c + 1} 欄（${reviewPos + 1}/${list.length}）：${escapeHtml(note)}`,
+  });
+  document.getElementById('review-btn').textContent = `🔎 待核對 (${reviewPos + 1}/${list.length})`;
 }
+
+/* ---- 復原：格子編輯與「一鍵修正」都推一筆 ---- */
+// 自動整理（千分位、混淆字）的原值在 tooltip 裡，但手動改錯、或按了不該按的
+// 「改成 X」之後沒有任何退路 —— 這是實務上最容易卡住的地方。
+const undoStack = [];
+function pushUndo(r, c, from) {
+  undoStack.push({ r, c, from });
+  if (undoStack.length > 200) undoStack.shift();
+  renderUndoButton();
+}
+function renderUndoButton() {
+  const btn = document.getElementById('undo-btn');
+  if (!btn) return;
+  btn.style.display = undoStack.length ? 'inline-flex' : 'none';
+}
+function undoLast() {
+  const it = undoStack.pop();
+  if (!it) return;
+  while (tableData[it.r] && tableData[it.r].length <= it.c) tableData[it.r].push('');
+  if (tableData[it.r]) tableData[it.r][it.c] = it.from;
+  renderUndoButton();
+  renderReviewButton();
+  if (smartActive) runSmartTotals();
+  else if (tableData.length) renderTable();
+  renderSummary({ kind: 'info', text: `↩︎ 已復原第 ${it.r + 1} 列／第 ${it.c + 1} 欄為「${escapeHtml(it.from)}」。` });
+}
+// Cmd/Ctrl+Z：編輯格子時讓瀏覽器自己處理（原生文字復原），其餘情況才接手
+document.addEventListener('keydown', ev => {
+  if (!(ev.metaKey || ev.ctrlKey) || ev.shiftKey || ev.key.toLowerCase() !== 'z') return;
+  if (ev.target?.closest?.('#data-table td[data-r]')) return;
+  if (!undoStack.length) return;
+  ev.preventDefault();
+  undoLast();
+});
 
 // 表格內用鍵盤走動：方向鍵上下、Enter 往下一列（打數字時不用一直點格子）
 document.addEventListener('keydown', ev => {
@@ -2163,6 +2250,26 @@ async function copyTable() {
     catch (err2) { renderSummary({ kind: 'err', text: '❌ 這個瀏覽器不允許自動複製，請手動選取表格。' }); }
     document.body.removeChild(ta);
   }
+}
+
+// 匯出 CSV 檔：TSV 貼進 Excel 很方便，但要留存、寄給別人或再匯入系統就需要檔案。
+// 加 UTF-8 BOM —— 沒有它 Excel（繁中 Windows）開起來中文會變亂碼。
+function exportCsv() {
+  if (!tableData.length) { renderSummary({ kind: 'warn', text: '⚠️ 還沒有辨識結果可以匯出。' }); return; }
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = '\ufeff' + tableData.map(row => row.map(esc).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `表格-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  renderSummary({ kind: 'ok', text: `✅ 已匯出 ${tableData.length} 列 CSV。` });
 }
 
 // 信心偏低時，一鍵改用高精度模型重跑（不必自己回頭找下拉選單）
