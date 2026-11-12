@@ -314,7 +314,9 @@
 <div class="container">
 
   <div class="upload-zone" id="drop-zone">
-    <input type="file" id="file-input" accept="image/*,application/pdf">
+    <!-- 不設 accept：手機瀏覽器看到 accept="image/*" 會先彈「相片庫／檔案」兩選項。
+         旁邊已有相機按鈕，這裡就是單純的檔案選擇器，型別由 loadFile() 自己檢查 -->
+    <input type="file" id="file-input">
     <div class="up-icon">📷</div>
     <p>拖曳圖片到此，或點擊 <strong>選擇檔案</strong></p>
     <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP，以及 PDF（逐頁辨識）</p>
@@ -331,7 +333,7 @@
   <!-- 手機/平板：直接開原生相機拍照（全解析度、可自動對焦），比網頁內的即時影像清楚得多 -->
   <input type="file" id="capture-input" accept="image/*" capture="environment" hidden>
   <div class="btn-row">
-    <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇圖片</button>
+    <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案</button>
     <button class="btn btn-outline" id="camera-btn" onclick="toggleCamera()">📷 拍照</button>
   </div>
 
@@ -868,6 +870,13 @@ async function renderPdfPage(n) {
 function loadFile(file, opts = {}) {
   if (file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''))) {
     openPdf(file);               // 非同步；載入完成後會自己呼叫 loadFile(該頁 PNG)
+    return;
+  }
+  if (!opts.fromPdf && file && !file.type.startsWith('image/')) {
+    // 走到這裡一定是使用者選了不支援的檔案（accept 已移除，不會被瀏覽器先擋掉）
+    const hint = document.getElementById('crop-hint');
+    if (hint) hint.textContent = `「${file.name}」不是圖片也不是 PDF。支援 JPG／PNG／WEBP 與 PDF。`;
+    renderSummary({ kind: 'error', text: `無法開啟「${file.name}」：只支援 JPG／PNG／WEBP 或 PDF。` });
     return;
   }
   // PDF 轉出來的頁面圖也會走這條路，不能因此把 pdfDoc 清掉（否則換頁列就消失）
