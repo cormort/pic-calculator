@@ -332,7 +332,7 @@
     <!-- accept 一定要留著：iOS 的 input[type=file] 一定會彈系統的「選擇一項操作」面板，
          而面板項目是照 accept 決定的 —— 有 image/* 時是「照片圖庫／選擇檔案」，
          完全不設 accept 反而多出「相機 攝影機」變成三個選項。單一選項在 iOS 做不到 -->
-    <input type="file" id="file-input" accept="image/*,application/pdf">
+    <input type="file" id="file-input" accept="image/*,application/pdf" multiple>
     <div class="up-icon">📷</div>
     <p>拖曳圖片到此，或點擊 <strong>選擇檔案</strong></p>
     <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP，以及 PDF（逐頁辨識）</p>
@@ -427,6 +427,16 @@
   </div>
 
   <div id="workspace">
+    <!-- 批次（多張圖）導覽 -->
+    <div class="card" id="batch-card" style="display:none;">
+      <div class="card-body" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <strong id="batch-title">批次</strong>
+        <button class="btn btn-outline btn-sm" onclick="batchStep(-1)">◀ 上一張</button>
+        <button class="btn btn-outline btn-sm" onclick="batchStep(1)">下一張 ▶</button>
+        <span class="note" id="batch-hint"></span>
+        <div id="batch-chips" style="display:flex; gap:6px; flex-wrap:wrap; width:100%;"></div>
+      </div>
+    </div>
     <!-- 摘要 -->
     <div id="summary"></div>
     <div id="smart-note" style="display:none;"></div>
@@ -810,12 +820,14 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('drag');
-  const f = e.dataTransfer.files[0];
-  if (f && f.type.startsWith('image/')) loadFile(f);
+  const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/') || /\.pdf$/i.test(f.name || ''));
+  if (files.length) handleFiles(files);
 });
 ['file-input', 'capture-input'].forEach(id => document.getElementById(id).addEventListener('change', e => {
-  if (e.target.files[0]) loadFile(e.target.files[0]);
-  e.target.value = '';   // 同一張圖可以重選
+  const files = [...(e.target.files || [])];
+  if (files.length === 1) loadFile(files[0]);
+  else if (files.length > 1) handleFiles(files);
+  e.target.value = '';   // 同一批檔案可以重選
 }));
 
 /* =============================================================
@@ -1005,6 +1017,8 @@ function loadFile(file, opts = {}) {
     }).catch(() => { /* 沒有底圖就用列表 */ });
   }
   if (!opts.fromPdf) pendingText = null;
+  // 批次換張時不要把佇列清掉；使用者自己選一張新圖才清
+  if (!opts.fromBatch && !opts.fromPdf) { batch = []; batchIndex = -1; renderBatchBar(); }
   scannedPdfPage = opts.fromPdf ? !!opts.scannedPage : false;
   currentFile = file;
   quadTouched = false;
@@ -1271,7 +1285,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v39';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v41';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1892,10 +1906,15 @@ async function analyzeImage() {
     runSmartTotals(true);
     applyTemplate();
     setPreviewCollapsed(true);
+    if (batch.length > 1 && batchIndex >= 0) {
+      batch[batchIndex].status = batchStatusOf();
+      renderBatchBar();
+    }
   } catch (err) {
     document.getElementById('template-note').style.display = 'none';
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
     ws.style.display = 'block';
+    if (batch.length > 1 && batchIndex >= 0) { batch[batchIndex].status = 'error'; renderBatchBar(); }
   } finally {
     analyzing = false;
     spinner.style.display = 'none';
@@ -2792,6 +2811,111 @@ function renderSummary({ kind, text }) {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => { if (tableData.length) renderTable(); });
 });
+
+/* =============================================================
+   批次：一次選多張圖，逐張辨識與驗算
+   ============================================================= */
+// 手機常見流程是「先連拍一堆表格，再回來逐張確認」。這裡把選檔變成佇列：
+// 每張各跑一次辨識與驗算，結果留在記憶體，可以前後翻、看得出哪幾張有問題。
+let batch = [];          // [{ file, name, result, status }]
+let batchIndex = -1;
+
+function handleFiles(files) {
+  const list = [...files].filter(f => f && (f.type.startsWith('image/') || /\.pdf$/i.test(f.name || '')));
+  if (!list.length) return;
+  batch = list.map(f => ({ file: f, name: f.name || '未命名', result: null, status: 'pending' }));
+  batchIndex = -1;
+  renderBatchBar();
+  batchStep(1);
+}
+
+function batchStep(delta) {
+  if (!batch.length) return;
+  const next = batchIndex + delta;
+  if (next < 0 || next >= batch.length) return;
+  saveBatchResult();                 // 離開前先記下這一張（含手改與選取）
+  batchIndex = next;
+  const item = batch[batchIndex];
+  renderBatchBar();
+  if (item.result) { restoreBatchResult(item.result); return; }
+  loadFile(item.file, { fromBatch: true });
+}
+
+// 把目前這張的結果存起來（沒有結果就不存，例如還沒辨識完）
+function saveBatchResult() {
+  if (batchIndex < 0 || batchIndex >= batch.length) return;
+  if (!tableData.length) return;
+  batch[batchIndex].status = batchStatusOf();   // 結算這一張的驗算狀態
+  batch[batchIndex].result = {
+    rows: tableData.map(r => r.slice()),
+    conf: cellConfidence.map(r => r.slice()),
+    boxes: cellBoxes.map(r => r.map(b => (b ? { ...b } : null))),
+    spans: cellSpans.map(r => r.map(s => (s ? { ...s } : null))),
+    repairs: [...cellRepairs.entries()],
+    json: null,
+  };
+}
+
+function restoreBatchResult(result) {
+  tableData = result.rows.map(r => r.slice());
+  cellConfidence = result.conf.map(r => r.slice());
+  cellBoxes = result.boxes.map(r => r.map(b => (b ? { ...b } : null)));
+  cellSpans = result.spans.map(r => r.map(s => (s ? { ...s } : null)));
+  cellRepairs = new Map(result.repairs);
+  manualTotalRows.clear();
+  pendingText = null;
+  clearSmart();
+  clearSelections();
+  document.getElementById('workspace').style.display = 'block';
+  const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
+  renderSummary({ kind: 'info', text: `批次第 ${batchIndex + 1} / ${batch.length} 張 — ${size}。` });
+  renderTable();
+  renderReviewButton();
+  runSmartTotals(true);      // 重算驗算與狀態（便宜、且會更新晶片）
+  if (batch.length > 1 && batchIndex >= 0) batch[batchIndex].status = batchStatusOf();
+  renderBatchBar();
+  setPreviewCollapsed(true);
+}
+
+function batchStatusOf() {
+  if (typeof smartInfo === 'undefined' || !smartInfo) return 'pending';
+  const bad = (smartInfo.unconfirmed || []).length + (smartMultiply && smartMultiply.failed ? smartMultiply.failed.length : 0);
+  const badNum = (smartUnparsed || []).length;
+  if (bad) return 'bad';
+  if (smartInfo.totalRows && smartInfo.totalRows.length) return 'ok';
+  return 'warn';
+}
+
+function renderBatchBar() {
+  const card = document.getElementById('batch-card');
+  if (!card) return;
+  if (batch.length <= 1) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const ok = batch.filter(b => b.status === 'ok').length;
+  const bad = batch.filter(b => b.status === 'bad').length;
+  const todo = batch.filter(b => b.status === 'pending').length;
+  document.getElementById('batch-title').textContent = `📚 批次 ${batch.length} 張`;
+  document.getElementById('batch-hint').textContent =
+    `目前第 ${batchIndex + 1} 張　✅ ${ok}　❌ ${bad}${todo ? `　待處理 ${todo}` : ''}　`
+    + '（同一格式的表格會沿用上一張的驗算設定）';
+  document.getElementById('batch-chips').innerHTML = batch.map((b, i) => {
+    const icon = b.status === 'ok' ? '✅' : b.status === 'bad' ? '❌'
+      : b.status === 'warn' ? '⚠️' : b.status === 'error' ? '💥' : '⏳';
+    const active = i === batchIndex ? ' style="outline:2px solid var(--primary);"' : '';
+    return `<button class="chip"${active} onclick="batchJump(${i})" title="${escapeHtml(b.name)}">`
+      + `${icon} ${i + 1}</button>`;
+  }).join('');
+}
+
+function batchJump(i) {
+  if (i === batchIndex || i < 0 || i >= batch.length) return;
+  saveBatchResult();
+  const item = batch[i];
+  batchIndex = i;
+  renderBatchBar();
+  if (item.result) restoreBatchResult(item.result);
+  else loadFile(item.file, { fromBatch: true });
+}
 
 /* =============================================================
    貼上文字／表格 → 表格
