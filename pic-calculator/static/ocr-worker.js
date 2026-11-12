@@ -545,6 +545,234 @@ async function splitStraddling(canvas, results, grid, svc) {
 }
 
 /* =============================================================
+   表格結構模式（PP-Structure SLANet，models/slanet_plus.onnx）
+   =============================================================
+   只給「幾乎沒有內部格線」的表格用：沒有線就沒有欄界，靠空白帶猜的結果實測只有
+   23% 格正確（數字格 0%）。結構模型直接給出「有哪些格子、各在哪裡」，把 OCR 的字框
+   依座標塞進去即可，不必再猜。
+
+   解碼規則照 PaddleOCR 官方 TableLabelDecode（merge_no_span_structure=True）：
+   字典把 `<td>` 換成 `<td></td>`、最前加上 sos、最後是 eos；sos 是座標佔位符要跳過，
+   `<td` 與 `<td></td>` 這兩個 token 才帶 8 個座標（四點多邊形，0～1 正規化）。
+   驗證紀錄見 bench/experiments/SLANET_FINDINGS.md（真瀏覽器 15／20 格全過、推論約 310ms）。
+*/
+const TABLE_STRUCTURE_MODEL = 'models/slanet_plus.onnx';
+const TABLE_VOCAB = [
+  "sos",
+  "<thead>",
+  "</thead>",
+  "<tbody>",
+  "</tbody>",
+  "<tr>",
+  "</tr>",
+  "<td",
+  ">",
+  "</td>",
+  " colspan=\"2\"",
+  " colspan=\"3\"",
+  " colspan=\"4\"",
+  " colspan=\"5\"",
+  " colspan=\"6\"",
+  " colspan=\"7\"",
+  " colspan=\"8\"",
+  " colspan=\"9\"",
+  " colspan=\"10\"",
+  " colspan=\"11\"",
+  " colspan=\"12\"",
+  " colspan=\"13\"",
+  " colspan=\"14\"",
+  " colspan=\"15\"",
+  " colspan=\"16\"",
+  " colspan=\"17\"",
+  " colspan=\"18\"",
+  " colspan=\"19\"",
+  " colspan=\"20\"",
+  " rowspan=\"2\"",
+  " rowspan=\"3\"",
+  " rowspan=\"4\"",
+  " rowspan=\"5\"",
+  " rowspan=\"6\"",
+  " rowspan=\"7\"",
+  " rowspan=\"8\"",
+  " rowspan=\"9\"",
+  " rowspan=\"10\"",
+  " rowspan=\"11\"",
+  " rowspan=\"12\"",
+  " rowspan=\"13\"",
+  " rowspan=\"14\"",
+  " rowspan=\"15\"",
+  " rowspan=\"16\"",
+  " rowspan=\"17\"",
+  " rowspan=\"18\"",
+  " rowspan=\"19\"",
+  " rowspan=\"20\"",
+  "<td></td>",
+  "eos"
+];
+const TABLE_TD_TOKENS = new Set(['<td', '<td></td>']);
+let structureSession = null, structureUnavailable = false;
+
+async function getStructureSession() {
+  if (structureSession) return structureSession;
+  if (structureUnavailable) return null;
+  // 先用 WASM 建立（實測 WASM 304ms、推論 310ms；WebGPU 對這顆含 Loop 的圖沒有好處，
+  // 而且 WebGPU 初始化在 worker 裡可能卡住）
+  try {
+    structureSession = await ort.InferenceSession.create(TABLE_STRUCTURE_MODEL, {
+      executionProviders: ['wasm'],
+      logSeverityLevel: 3,
+    });
+  } catch (err) {
+    try {
+      structureSession = await ort.InferenceSession.create(TABLE_STRUCTURE_MODEL, {
+        executionProviders: await getDefaultWebExecutionProviders(),
+      });
+    } catch (err2) {
+      structureUnavailable = true;
+      postStatus('表格結構模型載入失敗，改用格線判斷');
+      return null;
+    }
+  }
+  return structureSession;
+}
+
+// 488×488、BGR、ImageNet 正規化、右下補 0（PaddleOCR 的順序：先正規化再補）
+function structureInput(canvas) {
+  const N = 488;
+  const ratio = Math.min(1, N / Math.max(canvas.width, canvas.height));
+  const w = Math.max(1, Math.round(canvas.width * ratio));
+  const h = Math.max(1, Math.round(canvas.height * ratio));
+  const scaled = new OffscreenCanvas(w, h);
+  const g = scaled.getContext('2d', { willReadFrequently: true });
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(canvas, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data;
+  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+  const data = new Float32Array(3 * N * N);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = (y * w + x) * 4, d = y * N + x;
+      for (let ch = 0; ch < 3; ch++) {
+        const src = ch === 0 ? p + 2 : ch === 2 ? p : p + 1;   // BGR
+        data[ch * N * N + d] = (px[src] / 255 - mean[ch]) / std[ch];
+      }
+    }
+  }
+  return new ort.Tensor('float32', data, [1, 3, N, N]);
+}
+
+/* 解結構 token：模型輸出的序列本身就帶了列與格
+   （`<tr>` 開一列、`<td`／`<td></td>` 一格、` colspan="N"`／` rowspan="N"` 是合併資訊）。
+   直接照序列建表，不必再對座標做分群 —— 分群很吃容忍度，實測 5 欄會被拆成 8～32 欄。 */
+function structureRows(loc, probs, canvasW, canvasH) {
+  const rows = [];
+  let curRow = null, curCell = null;
+  const T = probs.dims[1], V = probs.dims[2];
+  for (let t = 0; t < T; t++) {
+    let best = 0, bestP = -Infinity;
+    for (let v = 0; v < V; v++) {
+      const p = probs.data[t * V + v];
+      if (p > bestP) { bestP = p; best = v; }
+    }
+    const token = TABLE_VOCAB[best];
+    if (token === 'eos') break;
+    if (token === 'sos') continue;
+    if (token === '<tr>') { curRow = []; rows.push(curRow); curCell = null; continue; }
+    if (token === '</tr>') { curRow = null; curCell = null; continue; }
+    if (token === '<thead>' || token === '</thead>' || token === '<tbody>' || token === '</tbody>') continue;
+    if (TABLE_TD_TOKENS.has(token)) {
+      if (!curRow) { curRow = []; rows.push(curRow); }
+      const o = t * 8, xs = [], ys = [];
+      for (let k = 0; k < 4; k++) {
+        xs.push(Math.min(1, Math.max(0, loc.data[o + k * 2])) * canvasW);
+        ys.push(Math.min(1, Math.max(0, loc.data[o + k * 2 + 1])) * canvasH);
+      }
+      curCell = {
+        x1: Math.min(...xs), x2: Math.max(...xs),
+        y1: Math.min(...ys), y2: Math.max(...ys),
+        colspan: 1, rowspan: 1, text: '', score: 1,
+      };
+      curRow.push(curCell);
+      continue;
+    }
+    const span = /^(?:rowspan|colspan)="(\d+)"$/.exec(token.replace(/^ /, ''));
+    if (span && curCell) {
+      if (token.startsWith(' colspan')) curCell.colspan = Math.max(1, +span[1]);
+      else curCell.rowspan = Math.max(1, +span[1]);
+    }
+  }
+  return rows.filter((r) => r.length);
+}
+
+/* 依 token 序列的行列位置填字：第 k 格放在「前面各格 colspan 加總」那一欄 */
+function rowsToTable(rows, words) {
+  if (!rows.length) return null;
+  let ncol = 1;
+  for (const row of rows) ncol = Math.max(ncol, row.reduce((s, c) => s + c.colspan, 0));
+  const grid = Array.from({ length: rows.length }, () => new Array(ncol).fill(''));
+  const conf = Array.from({ length: rows.length }, () => new Array(ncol).fill(1));
+  const boxes = Array.from({ length: rows.length }, () => new Array(ncol).fill(null));
+
+  const cells = [];
+  rows.forEach((row, r) => {
+    let c = 0;
+    for (const cell of row) {
+      cells.push({ ...cell, r, c, area: Math.max(1, (cell.x2 - cell.x1) * (cell.y2 - cell.y1)) });
+      boxes[r][c] = { x1: cell.x1, y1: cell.y1, x2: cell.x2, y2: cell.y2 };
+      c += cell.colspan;
+    }
+  });
+  // 合併儲存格面積較大，字框先找「面積最小又包含它」的那一格
+  const ordered = [...cells].sort((a, b) => a.area - b.area);
+  for (const w of words) {
+    let hit = null;
+    for (const cell of ordered) {
+      if (w.cx >= cell.x1 && w.cx <= cell.x2 && w.cy >= cell.y1 && w.cy <= cell.y2) { hit = cell; break; }
+    }
+    // 模型的格子常比實際文字框小一點（尤其最左欄），落在格子外的字不要丟掉 ——
+    // 找最近的格子，距離在「一個字高」以內就收下
+    if (!hit) {
+      // 只救「垂直方向還在同一列、只是稍微偏出左右邊界」的字；
+      // 允許垂直偏移會讓隔壁列的字被吸上来（實測：「1人事費1-1主持人費」併成一格）
+      const ySlack = Math.max(4, (w.h || 20) * 0.25);
+      let best = null, bestDx = Infinity;
+      for (const cell of cells) {
+        const dy = Math.max(cell.y1 - w.cy, 0, w.cy - cell.y2);
+        if (dy > ySlack) continue;
+        const dx = Math.max(cell.x1 - w.cx, 0, w.cx - cell.x2);
+        if (dx < bestDx) { bestDx = dx; best = cell; }
+      }
+      if (best && bestDx <= Math.max(12, (w.h || 20) * 0.8)) hit = best;
+    }
+    if (!hit) continue;
+    grid[hit.r][hit.c] = grid[hit.r][hit.c] ? grid[hit.r][hit.c] + ' ' + w.text : w.text;
+    conf[hit.r][hit.c] = Math.min(conf[hit.r][hit.c], Number.isFinite(w.score) ? w.score : 1);
+  }
+  // 去掉整列／整欄都空白的邊界
+  while (grid.length && grid[0].every((t) => !t)) { grid.shift(); conf.shift(); boxes.shift(); }
+  while (grid.length && grid[grid.length - 1].every((t) => !t)) { grid.pop(); conf.pop(); boxes.pop(); }
+  while (ncol > 1 && grid.every((row) => !row[ncol - 1])) {
+    grid.forEach((row) => row.pop()); conf.forEach((row) => row.pop()); boxes.forEach((row) => row.pop());
+    ncol--;
+  }
+  if (!grid.length) return null;
+  return { grid, conf, boxes, cells: cells.length, rows: grid.length, cols: ncol };
+}
+
+async function structureTable(canvas, words) {
+  const sess = await getStructureSession();
+  if (!sess) return null;
+  postStatus('沒有明顯格線，改用表格結構模型…');
+  const out = await sess.run({ x: structureInput(canvas) });
+  const tensors = Object.values(out);
+  const loc = tensors.find((t) => t.dims.length === 3 && t.dims[2] === 8);
+  const probs = tensors.find((t) => t.dims.length === 3 && t.dims[2] === TABLE_VOCAB.length);
+  if (!loc || !probs) return null;
+  const rows = structureRows(loc, probs, canvas.width, canvas.height);
+  return rowsToTable(rows, words);
+}
+
+/* =============================================================
    訊息處理
    ============================================================= */
 self.onmessage = async (event) => {
@@ -636,7 +864,13 @@ self.onmessage = async (event) => {
       preview = await pc.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
       previewScale = pw / rectRef.width;   // 原圖 px → 縮圖 px
     } catch (err) { preview = null; }
-    self.postMessage({ type: 'result', id, confidence, results, grid, preview, previewScale,
+    // 內部格線太少＝沒有欄界可用 → 交給表格結構模型決定格子（用已映射好的字框）
+    let structure = null;
+    const weakGrid = (grid?.v?.length || 0) < 3 || (grid?.h?.length || 0) < 3;
+    if (weakGrid) {
+      try { structure = await structureTable(canvas, results); } catch (err) { self.__structErr = String(err?.message || err); }
+    }
+    self.postMessage({ type: 'result', id, confidence, results, grid, structure, structErr: self.__structErr || null, preview, previewScale,
       normalized: ocrNormalized, backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });

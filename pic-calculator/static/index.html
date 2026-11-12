@@ -1085,7 +1085,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v20';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v28';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1166,6 +1166,8 @@ async function detectTableInWorker(file) {
   return msg.quad;
 }
 
+let lastStructure = null;   // 沒有格線時，表格結構模型算出來的格子
+
 async function ocrWords(file, quad) {
   const info = OCR_QUALITY_INFO[ocrQuality];
   const text = document.getElementById('spinner-text');
@@ -1174,6 +1176,7 @@ async function ocrWords(file, quad) {
   const msg = await workerRequest({ type: 'ocr', quality: ocrQuality, buffer, quad }, [buffer]);
   ocrConfidence = msg.confidence;
   ocrGrid = msg.grid || null;
+  lastStructure = msg.structure || null;   // 沒有格線時，worker 會用表格結構模型給格子
   // worker 傳回的是轉正後的縮圖 Blob；轉成 ImageBitmap 才好畫（記得放掉舊的，別累積記憶體）
   try { ocrPreview?.close?.(); } catch (e) {}
   ocrPreview = null;
@@ -1631,7 +1634,11 @@ async function analyzeImage() {
         ]);
       } catch (err) { /* 偵測失敗已在 loadFile 提示 */ }
     }
-    const built = buildTable(await ocrWords(currentFile, quad), ocrGrid);
+    const words = await ocrWords(currentFile, quad);
+    const structured = lastStructure;
+    const built = structured
+      ? { data: structured.grid, confidence: structured.conf, boxes: structured.boxes }
+      : buildTable(words, ocrGrid);
     const repaired = repairNumericCells(built.data, built.confidence);
     const stripped = stripGarbageText(repaired.data, headerRowCount());
     rememberTemplate();   // 換表之前先記下上一張的驗算設定
@@ -1651,9 +1658,12 @@ async function analyzeImage() {
     const vLines = (ocrGrid?.v || []).length, hLines = (ocrGrid?.h || []).length;
     lastGridWeak = vLines < 3 || hLines < 3;
     const gridNote = lastGridWeak
-      ? `　⚠️ 幾乎沒有偵測到內部格線（直線 ${vLines} 條、橫線 ${hLines} 條），`
-        + '欄位對位很可能整批錯開。<strong>建議</strong>：改成有格線的截圖，'
-        + '或把表格四角框緊一點再辨識一次。'
+      ? (structured
+        ? `　📐 幾乎沒有內部格線（直線 ${vLines} 條、橫線 ${hLines} 條），已改用<strong>表格結構模型</strong>`
+          + `定位格子（模型給 ${structured.cells} 個格子）。仍請掃一眼欄位有沒有對齊。`
+        : `　⚠️ 幾乎沒有偵測到內部格線（直線 ${vLines} 條、橫線 ${hLines} 條），`
+          + '欄位對位很可能整批錯開。<strong>建議</strong>：改成有格線的截圖，'
+          + '或把表格四角框緊一點再辨識一次。')
       : '';
     const lowCount = lowConfidenceCount();
     const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心（橘線），請按「🔎 核對低信心」逐格確認。` : '';
