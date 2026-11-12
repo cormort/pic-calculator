@@ -124,8 +124,9 @@
 
   .summary-banner {
     padding: 12px 16px; font-weight: 600; border-radius: var(--radius); margin-bottom: 12px;
-    display: flex; align-items: center; gap: 10px; font-size: .95rem;
+    display: flex; align-items: center; gap: 10px; font-size: .95rem; flex-wrap: wrap;
   }
+  .summary-banner .btn { flex: 0 0 auto; white-space: nowrap; }
   .summary-banner.ok { background: #eafaf1; color: #1a6640; border: 1px solid #a9dfbf; }
   .summary-banner.err { background: #fdedec; color: #922b21; border: 1px solid #f1948a; }
   .summary-banner.warn { background: #fef9e7; color: #7d6608; border: 1px solid #f9e79f; }
@@ -146,7 +147,10 @@
   .hint { font-size: .82rem; color: var(--muted); padding: 8px 12px; background: #f8f9fc; border-left: 3px solid var(--info); border-radius: 4px; }
 
   /* 表格 */
-  .table-wrap { padding: 8px 8px 16px; overflow-x: auto; }
+  .table-wrap { padding: 8px 8px 16px; overflow: auto; max-height: min(72vh, 640px); }
+  /* 表頭固定：長表格往下捲時還看得到欄號，橫向捲動時列號固定（.row-head 用 sticky left） */
+  table.data thead th { position: sticky; top: 0; z-index: 3; }
+  table.data td.cell-review { box-shadow: inset 0 0 0 3px var(--warn); background: #fff7e0; }
   table.data { border-collapse: separate; border-spacing: 0; font-size: .88rem; }
   table.data th, table.data td {
     border: 1px solid var(--border);
@@ -177,6 +181,7 @@
   table.data td.cell-error { background: #fdedec; font-weight: 700; color: var(--error); }
   /* 低信心格：左側橘線；智慧合計：綠底 */
   table.data td.cell-low { box-shadow: inset 3px 0 0 var(--warn); }
+  table.data td.cell-fixed { text-decoration: underline dotted var(--info); text-underline-offset: 4px; }
   table.data td.cell-smart-ok { background: #eafaf1; }
 
   /* 列範圍 */
@@ -292,6 +297,9 @@
         <option value="medium">高精度（約 139MB，較慢）</option>
       </select>
       <span id="quality-note" class="note">標準：密集表格／一般拍照</span>
+      <label class="note" style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;">
+        <input type="checkbox" id="auto-analyze" checked style="width:auto"> 選圖後自動辨識
+      </label>
     </div>
     <div class="quality-row" style="margin-top:2px;">
       <span id="backend-note" class="note" title="以實際建立的 ONNX session 為準；WebGPU 失敗會自動回退 WASM">後端：OCR —／版面 —</span>
@@ -334,7 +342,11 @@
     <div class="card">
       <div class="card-header">
         <span>📊 辨識結果 (可直接點 cell 修改)</span>
-        <button class="btn btn-outline btn-sm" onclick="resetAll()">🆕 重新辨識</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-warn btn-sm" id="review-btn" style="display:none" onclick="reviewLowConfidence()">🔎 核對低信心</button>
+          <button class="btn btn-outline btn-sm" onclick="copyTable()">📋 複製表格</button>
+          <button class="btn btn-outline btn-sm" onclick="resetAll()">🆕 重新辨識</button>
+        </div>
       </div>
       <div class="legend">
         <span><i style="background:#d6eaf8"></i>+ 加項</span>
@@ -557,7 +569,7 @@ const Validator = {
   _num(v) {
     if (v === null || v === undefined || v === '') return NaN;
     if (typeof v === 'number') return isNaN(v) ? NaN : v;
-    let s = v.toString().trim();
+    let s = toHalfWidth(v.toString()).trim();
     if (s === '') return NaN;
     // 金額前後常帶幣別（NT$、USD、NTS＝$ 被讀成 S）或手寫打勾被讀成的 V、J、√：
     // 英文字母與 $ 只出現在數字前後、合計不超過 6 個字，中間又是單一個數字時，只取數字。
@@ -566,6 +578,7 @@ const Validator = {
     s = s.replace(/[√✓✔]/g, ' ').trim();
     const money = s.match(/^([A-Za-z$\s]*?)([-(（]?\s*\d[\d,，.]*(?:[,，.]\s+\d[\d,，.]*)*\s*[)）]?\s*[%％]?)\s*([A-Za-z$元]*)$/);
     if (money && (money[1] + money[3]).replace(/\s/g, '').length <= 6) s = money[2];
+    s = fixThousandDots(s);
     if (/[a-zA-Z一-龥]/.test(s)) return NaN;
     if (!/^[-\d\.,，\(\)\$%\s]+$/.test(s)) return NaN;
     s = s.replace(/[,，\$\s]/g, '').replace(/[%％]/g, '');
@@ -588,6 +601,7 @@ let currentFile = null;
 let cameraStream = null;
 let tableData = [];           // 2D array of strings
 let cellConfidence = [];      // 與 tableData 對齊的每格 OCR 信心 (0~1)
+let cellRepairs = new Map();  // "r,c" -> { from, to } 自動整理過的數字（千分位/全形/混淆字）
 let selectedCols = [];        // [colIdx, ...] - 順序代表加入順序，最後一個是合計
 let selectedRows = [];        // [rowIdx, ...]
 let signs = new Map();        // index -> +1 or -1
@@ -649,6 +663,12 @@ handles.forEach((h, i) => h.addEventListener('pointerdown', e => {
   h.addEventListener('pointercancel', up);
 }));
 
+// 選圖後自動辨識：手機上「選圖 → 等框選 → 按辨識」是三次操作，少一次就少一次卡關。
+// 框選結果不理想時仍可自行調整角點，再按「辨識表格」重跑
+let autoAnalyze = true;
+try { autoAnalyze = localStorage.getItem('pcAutoAnalyze') !== '0'; } catch (err) { /* 忽略 */ }
+let analyzing = false;
+
 function loadFile(file) {
   currentFile = file;
   quadTouched = false;
@@ -666,6 +686,7 @@ function loadFile(file) {
           if (currentFile !== file || quadTouched) return;
           if (box) setQuad(box, '已自動框出表格。');
           else setQuad(quad, '找不到明顯表格，請手動拖曳四個角。');
+          if (box && autoAnalyze) analyzeImage();   // 自動框到表格就直接跑辨識
         })
         .catch(err => {
           console.warn('表格偵測失敗，改為辨識整張圖', err);   // 偵測只是輔助，失敗不擋辨識
@@ -857,6 +878,141 @@ function setOcrQuality(q) {
 
 /* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
+
+/* 一個字大約佔幾個「半形字寬」：中文 1、數字／英文 0.55、標點 0.4。
+   只用來把「格線落在第幾個字之間」換算出來，不需要很準。 */
+function charWidth(ch) {
+  if (/[\u2e80-\u9fff\uff01-\uff60]/.test(ch)) return 1;
+  if (/[0-9a-zA-Z]/.test(ch)) return 0.55;
+  if (/[\s]/.test(ch)) return 0.3;
+  return 0.4;
+}
+
+/* 偵測框跨過格線時拆成兩格。
+   實拍常見：項次「1-1」右對齊、科目「主持人費」左對齊，兩者只隔一條細線，
+   PP-OCR 的文字偵測會把整串框成一個字（「1-1主」）。這個框之後不論怎麼切欄，
+   都只能落在同一欄，整張表從這裡開始左右錯位 —— 於是先依格線把文字拆回去。 */
+function splitBoxAtLine(w, vLines) {
+  let boxes = [w];
+  for (const line of vLines) {
+    const next = [];
+    for (const b of boxes) {
+      const x = line.a + line.b * b.cy;
+      const text = b.text;
+      const wPx = b.x2 - b.x1;
+      if (text.length < 2 || wPx <= 0) { next.push(b); continue; }
+      const frac = (x - b.x1) / wPx;
+      // 落在框的邊緣就當成偵測器的 padding，不是真的跨格
+      if (frac <= 0.1 || frac >= 0.9) { next.push(b); continue; }
+      const total = [...text].reduce((s, ch) => s + charWidth(ch), 0);
+      const target = frac * total;
+      // 切在「字中心越過線」的那個字之前，不要把半個字切給左邊
+      let acc = 0, idx = 0;
+      for (let i = 0; i < text.length; i++) {
+        const cw = charWidth(text[i]);
+        if (acc + cw / 2 > target) { idx = i; break; }
+        acc += cw;
+        idx = i + 1;
+      }
+      if (idx <= 0 || idx >= text.length) { next.push(b); continue; }
+      // 只拆出一個中文字、右邊又接著中文 → 同一個詞被雜線切開，不要拆
+      if (idx === 1 && /[\u4e00-\u9fff]/.test(text[0]) && /[\u4e00-\u9fff]/.test(text[1])) { next.push(b); continue; }
+      // 整格是數字就完全不拆：拆成兩格假數字（「6」＋「46,219」）比不拆更糟，
+      // 整欄驗算會跟著錯。同列多個數字黏在一起的情況由上面的空白切分處理
+      if (!isNaN(Validator._num(text))) { next.push(b); continue; }
+      const left = text.slice(0, idx), right = text.slice(idx);
+      next.push({ ...b, text: left, x2: x, cx: (b.x1 + x) / 2, splitLine: true },
+        { ...b, text: right, x1: x, cx: (x + b.x2) / 2, splitLine: true });
+    }
+    boxes = next;
+  }
+  return boxes;
+}
+
+/* ---- 數字整理：全形、減號、千分位、常見 OCR 混淆字 ----
+   實拍最常見的兩種錯：逗號被讀成句點（25,000 → 25.000）、O 被讀成 0。
+   前者會讓 parseFloat 得到 25（整張表差一千倍），一定要在驗算前修掉。 */
+const FULLWIDTH_MAP = { '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9',
+  '．':'.','，':',','－':'-','（':'(','）':')','％':'%','　':' ','－':'-','＋':'+','／':'/','：':':' };
+const MINUS_VARIANTS = /[−–—﹣－‒]/g;
+const CONFUSABLES = { 'O':'0','o':'0','〇':'0','D':'0','Q':'0', 'l':'1','I':'1','|':'1','i':'1', 'S':'5','s':'5',
+  'B':'8', 'Z':'2','z':'2', 'G':'6', 'q':'9','g':'9', 'T':'7' };
+
+function toHalfWidth(s) {
+  return String(s ?? '').replace(/[\uff01-\uff5e　]/g, ch => FULLWIDTH_MAP[ch] || String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+}
+
+// 「1.920.497」「3,766.807」這種：句點後面剛好三位一組 → 句點其實是千分位
+// 前後可能有括號（會計負數）、負號或幣別符號，只修中間純數字的部分
+function fixThousandDots(s) {
+  const t = String(s);
+  const pre = /^[-(（$]*/.exec(t)[0], post = /[)）%％]*$/.exec(t.slice(pre.length))[0];
+  const core = t.slice(pre.length, t.length - post.length);
+  if (!/^\d+[.,\d]*$/.test(core)) return t;
+  let fixed = core;
+  if (/^\d{1,3}(?:\.\d{3}){2,}$/.test(core)) fixed = core.replace(/\./g, ',');
+  else if (/^\d{1,3}(?:,\d{3})+\.\d{3}$/.test(core)) fixed = core.replace(/\./g, ',');
+  return pre + fixed + post;
+}
+
+/* 逐格整理；需要「這一欄是不是數字欄」的上下文來判斷 25.000 是 25 還是 25,000。 */
+function repairNumericCells(data, confidence) {
+  const repairs = [];
+  const out = data.map(r => r.slice());
+  const cols = Math.max(0, ...out.map(r => r.length));
+  const parse = Validator._num;
+  const numeric = [];
+  for (let c = 0; c < cols; c++) {
+    let n = 0, total = 0;
+    for (const row of out) {
+      const t = String(row[c] ?? '').trim();
+      if (!t) continue;
+      total++;
+      if (!isNaN(parse(t))) n++;
+    }
+    numeric[c] = total > 0 && n / total >= 0.5;
+  }
+  for (let r = 0; r < out.length; r++) {
+    for (let c = 0; c < (out[r] || []).length; c++) {
+      const orig = String(out[r][c] ?? '').trim();
+      if (!orig) continue;
+      let s = toHalfWidth(orig).replace(MINUS_VARIANTS, '-').trim();
+      // 「969,.524」逗號與句點黏在一起：多出來的那一個是雜訊
+      s = s.replace(/,\./g, ',').replace(/\.(?=,)/g, '');
+      // 全形括號負數
+      s = fixThousandDots(s);
+      if (!isNaN(parse(s)) && /[A-Za-z]/.test(s) === false) {
+        // 只有數字、逗號、點、括號、負號：交給下面統一格式化
+      } else if (numeric[c] || /^[\dOolISBZGsqgT.,()\-\s]+$/.test(s)) {
+        // 混淆字只在地數字欄或有明顯數字骨架時才動手
+        const mapped = s.replace(/[A-Za-z〇|]/g, ch => CONFUSABLES[ch] ?? ch);
+        if (mapped !== s && !isNaN(parse(fixThousandDots(mapped)))) s = fixThousandDots(mapped);
+      }
+      // 單一組「25.000」：靠整欄的千分位習慣判斷
+      if (/^\d{1,3}\.\d{3}$/.test(s)) {
+        const colHasThousands = out.some((row, rr) => rr !== r && /^\d{1,3}(,\d{3})+$/.test(toHalfWidth(String(row[c] ?? '')).trim()));
+        if (colHasThousands && numeric[c]) s = s.replace('.', ',');
+      }
+      // 統一千分位：能解析的數字重新格式化（-1,234.5）
+      const n = parse(s);
+      if (!isNaN(n) && /^[\d,.\-()%$ ]+$/.test(s)) {
+        const body = s.replace(/[,$ ]/g, '');
+        if (/^-?\d+(\.\d+)?$/.test(body)) {
+          const dec = (body.split('.')[1] || '').length;
+          s = n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: Math.min(dec, 4) });
+          if (dec > 0 && !s.includes('.')) s += '.' + '0'.repeat(dec);
+        }
+      }
+      if (s !== orig) {
+        out[r][c] = s;
+        repairs.push({ r, c, from: orig, to: s });
+        if (confidence?.[r]) confidence[r][c] = Math.min(confidence[r][c] ?? 1, 0.9);
+      }
+    }
+  }
+  return { data: out, repairs };
+}
+
 // grid（可省略）：Worker 偵測到的表格格線 { v: [{a,b}], h: [{a,b}] }，直線 x = a + b*y、橫線 y = a + b*x
 function buildTable(words, grid) {
   if (!words.length) return { data: [], confidence: [] };
@@ -864,6 +1020,7 @@ function buildTable(words, grid) {
 
   // 偵測有時把同一列相鄰幾欄的數字框成一個框（文字是「50,000 25,264 8,692」）。
   // 以空白切開後每段都是完整數字，就依字元位置等比例拆回多個框，後面才切得出欄
+  const vLines = grid?.v || [], hLines = grid?.h || [];
   const wholeNum = t => !isNaN(Validator._num(t)) && /\d$/.test(t) && /^[-(（$\d]/.test(t);
   words = words.flatMap(w => {
     const parts = w.text.split(/\s+/).filter(Boolean);
@@ -878,9 +1035,11 @@ function buildTable(words, grid) {
     });
   });
 
+  // 框跨過格線（右對齊項次緊貼左對齊科目）→ 依線拆回兩格
+  if (vLines.length) words = words.flatMap(w => splitBoxAtLine(w, vLines));
+
   // 格線是最可靠的欄界：先記下每個框落在第幾條直線之間（seg），之後不跨線合併、也不跨線併欄
-  // 用轉正前的座標比對，因為線的位置是在原圖上量的
-  const vLines = grid?.v || [], hLines = grid?.h || [];
+  // 用轉正後的座標比對：線與文字都在同一張轉正圖上量的
   words = words.map(w => ({
     ...w, ox: w.cx, oy: w.cy,
     seg: vLines.reduce((n, l) => n + (l.a + l.b * w.cy < w.cx ? 1 : 0), 0),
@@ -929,8 +1088,25 @@ function buildTable(words, grid) {
       const twoNumbers = last && (w.split || w.x1 - last.x2 > rowH * 0.3)
         && isNum(last.text) && isNum(w.text)
         && !/[,，.\-(（]$/.test(last.text) && !/^[,，.)）%％]/.test(w.text);
+      // 兩個框在水平方向大幅重疊、其中一個的字又是另一個的一部分（殘字、重複偵測）：
+      // 以字多的那個為準，不要疊成「主持人費主」「200.0002」
+      const overlap = last ? Math.min(last.x2, w.x2) - Math.max(last.x1, w.x1) : 0;
+      const smallW = last ? Math.min(last.x2 - last.x1, w.x2 - w.x1) : 0;
+      const near = last && w.x1 - last.x2 <= gapTol;
+      // 大幅重疊（>50%）時不管在哪一欄都是重複偵測；只有「相接但沒重疊」才要求同欄
+      const dup = last && smallW > 0
+        && (last.splitLine || w.splitLine || Math.min(last.text.length, w.text.length) <= 2)
+        && (last.text.includes(w.text) || w.text.includes(last.text))
+        && (overlap > 0.5 * smallW || (last.seg === w.seg && near));
       // 中文字之間不補空白（偵測常把一個詞切成數塊）
-      if (last && !twoNumbers && last.seg === w.seg && w.x1 - last.x2 <= gapTol) {
+      if (dup) {
+        const keep = w.text.length > last.text.length ? w.text : last.text;
+        const keepScore = w.text.length > last.text.length ? (w.score ?? 1) : last.score;
+        last.text = keep;
+        last.score = Math.min(keepScore, Math.max(last.score, w.score ?? 1));
+        last.x1 = Math.min(last.x1, w.x1);
+        last.x2 = Math.max(last.x2, w.x2);
+      } else if (last && !twoNumbers && last.seg === w.seg && w.x1 - last.x2 <= gapTol) {
         last.text += (CJK.test(last.text.slice(-1)) || CJK.test(w.text[0]) ? '' : ' ') + w.text;
         last.x2 = Math.max(last.x2, w.x2);
         last.y1 = Math.min(last.y1, w.y1);
@@ -939,7 +1115,7 @@ function buildTable(words, grid) {
       } else {
         cells.push({
           text: w.text, x1: w.x1, x2: w.x2, y1: w.y1, y2: w.y2,
-          score: w.score ?? 1, seg: w.seg,
+          score: w.score ?? 1, seg: w.seg, splitLine: w.splitLine,
         });
       }
     }
@@ -1046,8 +1222,27 @@ function buildTable(words, grid) {
     });
   }
 
-  // 去掉頭尾整欄空白（例如頁面邊緣被當成線而多出來的欄）
-  let from = 0, keep = ncols;
+  // 表格上方的標題（「113年度…明細表」）不是表格的一列：有橫線、下一列就在線下、
+  // 而且這一列沒有任何數字時，當成標題丟掉
+  while (hLines.length >= 2 && outRows.length > 2
+    && outRows[0].band === 0 && outRows[1].band > 0
+    && !outRows[0].out.some(t => !isNaN(Validator._num(t)))) {
+    outRows.shift();
+  }
+
+  // 去掉整欄空白：頁面邊緣、陰影或紙張摺線被當成格線時，會多切出空欄；
+  // 整個欄（含表頭）都沒字就是雜訊，去掉才不會讓表頭與數字左右錯開一格
+  const emptyCols = [];
+  for (let c = 0; c < ncols; c++) if (outRows.every(r => !r.out[c])) emptyCols.push(c);
+  if (emptyCols.length) {
+    outRows = outRows.map(r => ({
+      ...r,
+      out: r.out.filter((_, c) => !emptyCols.includes(c)),
+      conf: r.conf.filter((_, c) => !emptyCols.includes(c)),
+    }));
+  }
+  // 再去掉頭尾整欄空白
+  let from = 0, keep = Math.max(1, ncols - emptyCols.length);
   while (keep > 1 && outRows.every(r => !r.out[keep - 1])) keep--;
   while (from < keep - 1 && outRows.every(r => !r.out[from])) from++;
 
@@ -1059,6 +1254,8 @@ function buildTable(words, grid) {
 
 async function analyzeImage() {
   if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
+  if (analyzing) return;
+  analyzing = true;
   const spinner = document.getElementById('spinner');
   const ws = document.getElementById('workspace');
   const qualityEl = document.getElementById('ocr-quality');
@@ -1078,8 +1275,10 @@ async function analyzeImage() {
       } catch (err) { /* 偵測失敗已在 loadFile 提示 */ }
     }
     const built = buildTable(await ocrWords(currentFile, quad), ocrGrid);
-    tableData = built.data;
+    const repaired = repairNumericCells(built.data, built.confidence);
+    tableData = repaired.data;
     cellConfidence = built.confidence;
+    cellRepairs = new Map(repaired.repairs.map(x => [x.r + ',' + x.c, x]));
     const blurry = ocrConfidence < LOW_CONFIDENCE;
     if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容' + (blurry ? '（圖片解析度太低或太模糊）' : ''));
     clearSmart();
@@ -1087,16 +1286,22 @@ async function analyzeImage() {
     ws.style.display = 'block';
     const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
     const lowCount = lowConfidenceCount();
-    const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心，已用橘線標示。` : '';
+    const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心（橘線），請按「🔎 核對低信心」逐格確認。` : '';
+    const fixNote = cellRepairs.size ? `　🔧 ${cellRepairs.size} 格數字已自動整理（虛線標示）。` : '';
+    const retryBtn = (blurry || lowCount > 3) && ocrQuality !== 'medium'
+      ? ' <button class="btn btn-warn btn-sm" onclick="retryHighAccuracy()">🔁 用高精度模型重辨識</button>' : '';
     renderSummary(blurry
-      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}` }
-      : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}請點擊欄號或列號進行驗算。` });
+      ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}${fixNote}${retryBtn}` }
+      : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}` });
     renderTable();
+    reviewPos = -1;
+    renderReviewButton();
     runSmartTotals(true);
   } catch (err) {
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
     ws.style.display = 'block';
   } finally {
+    analyzing = false;
     spinner.style.display = 'none';
     // 直接跳到結果。原本的平滑捲動在版面剛變動時會被瀏覽器取消，結果留在畫面外沒人看到
     ws.scrollIntoView({ block: 'start' });
@@ -1112,6 +1317,7 @@ function resetAll() {
   currentFile = null;
   tableData = [];
   cellConfidence = [];
+  cellRepairs.clear();
   clearSmart();
   clearSelections();
 }
@@ -1167,11 +1373,14 @@ function renderTable() {
       if (low) cellCls += ' cell-low';
       if (!inCol || rowOut) cellCls += ' row-out';
       const titles = [];
+      const fix = cellRepairs.get(r + ',' + c);
+      if (fix) titles.push(`已自動整理：原辨識「${fix.from}」`);
       const errMsg = Validator.errMsg(r, c);
       if (errMsg) titles.push(errMsg);
       if (low) titles.push(`OCR 信心 ${Math.round(conf * 100)}%，建議核對`);
       const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
-      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true"${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
+      if (fix) cellCls += ' cell-fixed';
+      html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true" inputmode="decimal"${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
     }
     html += '</tr>';
   }
@@ -1268,6 +1477,13 @@ function onCellEdit(td) {
   if (!cellConfidence[r]) cellConfidence[r] = [];
   while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
   cellConfidence[r][c] = 1;   // 人工確認過，不再算低信心
+  // 手打的整數也補千分位（25000 → 25,000），跟 OCR 結果和驗算的顯示一致
+  const plain = newVal.replace(/\s/g, '');
+  if (/^-?\d{4,}(\.\d+)?$/.test(plain)) {
+    const n = Validator._num(plain);
+    if (!isNaN(n)) { tableData[r][c] = n.toLocaleString('en-US', { maximumFractionDigits: 4 }); td.innerText = tableData[r][c]; }
+  }
+  renderReviewButton();
   if (smartActive) { runSmartTotals(); return; }
   // 編輯後依目前選取重新驗算，摘要與錯誤清單才會跟表格一致
   afterSelectionChange();
@@ -1434,6 +1650,109 @@ function renderSummary({ kind, text }) {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => { if (tableData.length) renderTable(); });
 });
+
+/* =============================================================
+   低信心核對、鍵盤移動、複製表格
+   ============================================================= */
+// 低信心格常是辨識錯的數字，一格格跳過去核對比在表格裡找橘線快得多
+let reviewPos = -1;
+
+function lowConfidenceCells() {
+  const out = [];
+  for (let r = 0; r < cellConfidence.length; r++) {
+    for (let c = 0; c < (cellConfidence[r] || []).length; c++) {
+      if (Number.isFinite(cellConfidence[r][c]) && cellConfidence[r][c] < LOW_CONFIDENCE) out.push({ r, c });
+    }
+  }
+  return out;
+}
+
+function renderReviewButton() {
+  const btn = document.getElementById('review-btn');
+  if (!btn) return;
+  const n = lowConfidenceCells().length;
+  btn.style.display = n ? 'inline-flex' : 'none';
+  btn.textContent = `🔎 核對低信心 (${n})`;
+}
+
+function selectCellText(td) {
+  const range = document.createRange();
+  range.selectNodeContents(td);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function reviewLowConfidence() {
+  const list = lowConfidenceCells();
+  if (!list.length) { renderSummary({ kind: 'ok', text: '✅ 沒有信心不足的格子了。' }); return; }
+  reviewPos = (reviewPos + 1) % list.length;
+  const { r, c } = list[reviewPos];
+  const td = document.querySelector(`#data-table td[data-r="${r}"][data-c="${c}"]`);
+  if (!td) return;
+  document.querySelectorAll('#data-table td.cell-review').forEach(el => el.classList.remove('cell-review'));
+  td.classList.add('cell-review');
+  td.scrollIntoView({ block: 'center', inline: 'center' });
+  td.focus();
+  selectCellText(td);
+  document.getElementById('review-btn').textContent = `🔎 核對低信心 (${reviewPos + 1}/${list.length})`;
+}
+
+// 表格內用鍵盤走動：方向鍵上下、Enter 往下一列（打數字時不用一直點格子）
+document.addEventListener('keydown', ev => {
+  const td = ev.target?.closest?.('#data-table td[data-r]');
+  if (!td) return;
+  const r = +td.dataset.r, c = +td.dataset.c;
+  const go = (dr, dc) => {
+    const t = document.querySelector(`#data-table td[data-r="${r + dr}"][data-c="${c + dc}"]`);
+    if (!t) return false;
+    ev.preventDefault();
+    t.focus();
+    selectCellText(t);
+    return true;
+  };
+  if (ev.key === 'Enter') { if (go(1, 0)) td.blur(); }
+  else if (ev.key === 'ArrowDown') go(1, 0);
+  else if (ev.key === 'ArrowUp') go(-1, 0);
+});
+
+// 複製成 TSV：直接貼進 Excel／Google 試算表對帳
+async function copyTable() {
+  if (!tableData.length) { renderSummary({ kind: 'warn', text: '⚠️ 還沒有辨識結果可以複製。' }); return; }
+  const tsv = tableData.map(row => row.map(v => String(v ?? '').replace(/\t/g, ' ')).join('\t')).join('\n');
+  try {
+    await navigator.clipboard.writeText(tsv);
+    renderSummary({ kind: 'ok', text: `✅ 已複製 ${tableData.length} 列，可直接貼到 Excel／Google 試算表。` });
+  } catch (err) {
+    const ta = document.createElement('textarea');
+    ta.value = tsv;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); renderSummary({ kind: 'ok', text: '✅ 已複製表格（TSV）。' }); }
+    catch (err2) { renderSummary({ kind: 'err', text: '❌ 這個瀏覽器不允許自動複製，請手動選取表格。' }); }
+    document.body.removeChild(ta);
+  }
+}
+
+// 信心偏低時，一鍵改用高精度模型重跑（不必自己回頭找下拉選單）
+function retryHighAccuracy() {
+  const sel = document.getElementById('ocr-quality');
+  if (sel) sel.value = 'medium';
+  setOcrQuality('medium');
+  analyzeImage();
+}
+
+// 自動辨識開關（記住上次選擇）
+const autoAnalyzeEl = document.getElementById('auto-analyze');
+if (autoAnalyzeEl) {
+  autoAnalyzeEl.checked = autoAnalyze;
+  autoAnalyzeEl.addEventListener('change', () => {
+    autoAnalyze = autoAnalyzeEl.checked;
+    try { localStorage.setItem('pcAutoAnalyze', autoAnalyze ? '1' : '0'); } catch (err) { /* 忽略 */ }
+  });
+}
 
 // 初始化辨識精度選單（記住上次選擇）
 const qualitySelect = document.getElementById('ocr-quality');

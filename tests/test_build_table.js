@@ -16,7 +16,11 @@ const rangeSrc = html.match(/function selectRange\(arr, anchor, idx\) \{[\s\S]*?
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
 // 用 index.html 裡真正的數字解析，避免測試與實作各寫一份
 const numSrc = html.match(/  _num\(v\) \{[\s\S]*?\n  \},/)[0];
-const Validator = eval("({" + numSrc + "})");
+// _num 會用到全形轉換與千分位修正，helper 一起抽出來（同一個 eval 才看得到彼此）
+const helperSrc = html.match(/const FULLWIDTH_MAP[\s\S]*?\nfunction repairNumericCells[\s\S]*?\n\}\n/)[0];
+const helpers = eval(helperSrc + "\n;({ Validator: ({" + numSrc + "}), repairNumericCells })");
+const Validator = helpers.Validator;
+const repairCells = helpers.repairNumericCells;  // eval 會把同名 function 留在作用域，換個名字
 
 // 幣別與手寫打勾不影響數字解析
 assert.strictEqual(Validator._num("NT$ 122,226"), 122226);
@@ -37,6 +41,10 @@ assert.ok(isNaN(Validator._num("Q3 2024")));
 assert.ok(isNaN(Validator._num("2023 vs 2024")));
 assert.ok(isNaN(Validator._num("1100 現金")));
 assert.ok(isNaN(Validator._num("Grand total 1,000 dollars")));
+
+// buildTable 會用到字寬估算與「跨格線拆框」
+eval(html.match(/function charWidth\(ch\) \{[\s\S]*?\n\}\n/)[0]);
+eval(html.match(/function splitBoxAtLine\(w, vLines\) \{[\s\S]*?\n\}\n/)[0]);
 
 let signs = new Map();
 eval(buildSrc);
@@ -112,6 +120,22 @@ const missing = buildTable([
 ], { v: [10, 100, 400].map(vline), h: [] });
 assert.deepStrictEqual(missing.data[0], ["A", "1,000", "2,000"]);
 
+// 同一格被偵測兩次（「人」與「人事費」大幅重疊）→ 留字多的那個，不要疊字
+const dupCell = buildTable([
+  w("項次", 30, 90, 100), w("會計科目", 150, 260, 100),
+  w("人", 100, 175, 150), w("人事費", 120, 240, 150),
+], { v: [10, 130, 320].map(vline), h: [80, 130, 180].map(hline) });
+assert.deepStrictEqual(dupCell.data[1], ["", "人事費"]);
+
+// 整欄都沒字（陰影／紙緣被當成格線）→ 去掉那一欄，表頭才不會與數字錯開
+const emptyCol = buildTable([
+  w("科目", 30, 90, 100), w("金額", 300, 360, 100),
+  w("租金", 30, 80, 150), w("12,000", 300, 360, 150),
+  w("水電", 30, 80, 200), w("3,500", 300, 360, 200),
+], { v: [10, 120, 250, 400].map(vline), h: [80, 130, 180, 230].map(hline) });
+assert.deepStrictEqual(emptyCol.data[0], ["科目", "金額"]);
+assert.deepStrictEqual(emptyCol.data[1], ["租金", "12,000"]);
+
 // Shift 連續選取
 let arr = [3];
 signs = new Map();
@@ -128,4 +152,41 @@ arr = [3, 4, 10];
 selectRange(arr, 4, 8);
 assert.deepStrictEqual(arr, [3, 4, 5, 6, 7, 8, 10]);
 
-console.log("PASS  frontend buildTable / confidence / range selection");
+// 全形數字、句點被讀成千分位
+assert.strictEqual(Validator._num("２００,０００"), 200000);
+assert.strictEqual(Validator._num("1.920.497"), 1920497);
+assert.strictEqual(Validator._num("－25,000"), -25000);
+assert.strictEqual(Validator._num("3,766.807"), 3766807);
+
+// 偵測框跨過格線：「1-1主」依線拆回項次與科目，欄位不會整列右移
+const straddle = buildTable([
+  w("項次", 30, 90, 100), w("會計科目", 150, 260, 100), w("金額", 400, 470, 100),
+  w("1-1主", 20, 175, 150), w("主持人費", 165, 300, 150), w("200,000", 380, 500, 150),
+  w("1-2兼", 20, 175, 200), w("兼任助理", 165, 300, 200), w("180,000", 380, 500, 200),
+], { v: [10, 130, 360, 520].map(vline), h: [80, 130, 180, 230].map(hline) });
+assert.deepStrictEqual(straddle.data[1], ["1-1", "主持人費", "200,000"]);
+assert.deepStrictEqual(straddle.data[2], ["1-2", "兼任助理", "180,000"]);
+
+// 不要拆斷一個完整數字：格線剛好落在數字中間時維持原樣
+const noSplit = buildTable([
+  w("20,622,869", 100, 260, 150),
+  w("20,084,844", 100, 260, 200),
+], { v: [10, 180, 300].map(vline), h: [] });
+assert.deepStrictEqual(noSplit.data[0][0], "20,622,869");
+
+// 數字整理：混淆字（O→0、l→1）、全形、千分位句點
+const raw = [["項次", "收入", "金額"], ["1", "(1.920.497)", "O"], ["2", "３０００", "l"]];
+const rep = repairCells(raw.map(r => r.slice()), [[1, 1, 1], [1, 1, 0.7], [1, 1, 0.7]]);
+assert.deepStrictEqual(rep.data[1], ["1", "(1,920,497)", "0"]);  // 括號負數保持原樣，但千分位要修對
+assert.strictEqual(Validator._num("(1.920.497)"), -1920497);
+assert.deepStrictEqual(rep.data[2], ["2", "3,000", "1"]);
+assert.ok(rep.repairs.length >= 4);
+
+// 單組「25.000」要靠整欄都是千分位才轉
+const repCol = repairCells([["單價"], ["25.000"], ["12,000"]], null);
+assert.deepStrictEqual(repCol.data[1], ["25,000"]);
+// 沒有同欄證據時不要亂改（可能真的是小數）
+const repKeep = repairCells([["單價"], ["25.000"], ["12.5"]], null);
+assert.strictEqual(repKeep.data[1][0], "25.000");
+
+console.log("PASS  frontend buildTable / confidence / range selection / numeric repair");
