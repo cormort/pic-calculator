@@ -137,7 +137,6 @@
   .field select { min-width: 200px; }
 
   .hint { font-size: .82rem; color: var(--muted); padding: 8px 12px; background: #f8f9fc; border-left: 3px solid var(--info); border-radius: 4px; }
-  #smart-note { margin-bottom: 12px; background: #f3f8ff; border-left-color: var(--primary); }
 
   /* 表格 */
   .table-wrap { padding: 8px 8px 16px; overflow-x: auto; }
@@ -274,6 +273,8 @@
     </div>
     <p id="crop-hint"></p>
     <div class="btn-row" style="margin-top:6px;">
+      <button class="btn btn-ghost btn-sm" onclick="rotateImage(-1)">⟲ 左轉 90°</button>
+      <button class="btn btn-ghost btn-sm" onclick="rotateImage(1)">⟳ 右轉 90°</button>
       <button class="btn btn-ghost btn-sm" onclick="setQuad(FULL_QUAD)">↺ 框選整張圖</button>
     </div>
     <div class="quality-row">
@@ -301,7 +302,7 @@
   <div id="workspace">
     <!-- 摘要 -->
     <div id="summary"></div>
-    <div id="smart-note" class="hint" style="display:none;"></div>
+    <div id="smart-note" style="display:none;"></div>
 
     <!-- 控制面板 -->
     <div class="card">
@@ -571,6 +572,7 @@ let selectedRows = [];        // [rowIdx, ...]
 let signs = new Map();        // index -> +1 or -1
 let lastResult = null;
 let smartActive = false, smartInfo = null;   // 智慧合計
+const smartBad = new Set();                  // "r,c" -> 自動比對不符的合計
 const smartMarks = new Set();                // "r,c" -> 自動比對成功的合計
 
 /* =============================================================
@@ -655,6 +657,22 @@ function loadFile(file) {
   };
   reader.readAsDataURL(file);
   stopCamera();
+}
+
+// 轉向：把圖轉 90° 後當成新圖重新載入（框選與自動偵測跟著重來，Worker 不必知道角度）
+// ponytail: 每轉一次 JPEG 會重新壓縮一次（品質 0.95）；嫌畫質掉再改成記角度、辨識時才轉
+function rotateImage(dir) {
+  const img = document.getElementById('preview-img');
+  if (!currentFile || !img.naturalWidth) return;
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const c = document.createElement('canvas');
+  c.width = h; c.height = w;
+  const g = c.getContext('2d');
+  g.translate(h / 2, w / 2);
+  g.rotate(dir * Math.PI / 2);
+  g.drawImage(img, -w / 2, -h / 2);
+  const type = currentFile.type === 'image/png' ? 'image/png' : 'image/jpeg', name = currentFile.name;
+  c.toBlob(b => { if (b) loadFile(new File([b], name, { type })); else alert('圖片太大，無法旋轉'); }, type, 0.95);
 }
 
 async function toggleCamera() {
@@ -971,13 +989,14 @@ async function analyzeImage() {
       ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}` }
       : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}請點擊欄號或列號進行驗算。` });
     renderTable();
-    runSmartTotals();
-    ws.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    runSmartTotals(true);
   } catch (err) {
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${err.message}</div>`;
     ws.style.display = 'block';
   } finally {
     spinner.style.display = 'none';
+    // 直接跳到結果。原本的平滑捲動在版面剛變動時會被瀏覽器取消，結果留在畫面外沒人看到
+    ws.scrollIntoView({ block: 'start' });
     document.getElementById('analyze-btn').disabled = false;
     if (qualityEl) qualityEl.disabled = false;
   }
@@ -1041,6 +1060,7 @@ function renderTable() {
       if (Validator.isOk(r, c)) cellCls = 'cell-ok';
       if (Validator.hasErr(r, c)) cellCls = 'cell-error';
       if (smartMarks.has(r + ',' + c)) cellCls += ' cell-smart-ok';
+      if (smartBad.has(r + ',' + c)) cellCls += ' cell-error';
       if (low) cellCls += ' cell-low';
       if (!inCol || rowOut) cellCls += ' row-out';
       const titles = [];
@@ -1168,7 +1188,7 @@ const SMART_TOL_ABS = 2, SMART_TOL_REL = 0.00001;
 function fmtNum(n) { return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); }
 
 function clearSmart() {
-  smartActive = false; smartInfo = null; smartMarks.clear();
+  smartActive = false; smartInfo = null; smartMarks.clear(); smartBad.clear();
   const el = document.getElementById('smart-note');
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
@@ -1202,6 +1222,8 @@ function runSmartTotals(showEmpty = false) {
   });
   smartMarks.clear();
   info.confirmed.forEach(hit => smartMarks.add(hit.r + ',' + hit.c));
+  smartBad.clear();
+  info.unconfirmed.forEach(hit => smartBad.add(hit.r + ',' + hit.c));
   smartInfo = info;
   smartActive = info.totalRows.length > 0 || showEmpty;
   renderTable();
@@ -1215,17 +1237,21 @@ function renderSmartNote() {
     return;
   }
   const { totalRows, confirmed, unconfirmed } = smartInfo;
-  let html;
+  // 判斷結果用整條橫幅：綠＝全部相符、紅＝有不符、黃＝沒驗到（不代表正確）
+  let html, kind;
+  const checked = confirmed.length + unconfirmed.length;
   if (!totalRows.length) {
-    html = '🪄 沒有找到「合計/小計/總計/總額」列；請確認表格標籤，或改用欄/列手動選取。';
+    kind = 'warn';
+    html = '⚠️ <strong>尚未驗算</strong>：找不到「合計/小計/總計/總額」列。請點欄號或列號手動驗算。';
+  } else if (checked === 0) {
+    kind = 'warn';
+    html = `⚠️ <strong>尚未驗算</strong>：找到 ${totalRows.length} 個合計列，但沒有可試算的數字。請點欄號或列號手動驗算。`;
   } else {
-    const checked = confirmed.length + unconfirmed.length;
-    html = `🪄 <strong>智慧合計</strong>：找到 ${totalRows.length} 個合計列，`
-      + (checked === 0
-          ? '但沒有可試算的數字（可改用欄/列手動選取）。'
-          : `已自動比對 ${confirmed.length} 格`
-            + (unconfirmed.length ? `，<strong>${unconfirmed.length} 格需人工確認</strong>` : '，全部相符')
-            + '。可直接修改數字或點欄/列手動調整。');
+    kind = unconfirmed.length ? 'err' : 'ok';
+    html = (unconfirmed.length
+        ? `❌ <strong>自動驗算：${unconfirmed.length} 格合計不符</strong>，另 ${confirmed.length} 格相符`
+        : `✅ <strong>自動驗算：${confirmed.length} 格合計全部相符</strong>`)
+      + `（共 ${totalRows.length} 個合計列）。可直接修改數字或點欄/列手動調整。`;
     if (unconfirmed.length) {
       const items = unconfirmed.slice(0, 6).map(x => {
         const near = x.candidates.slice()
@@ -1238,8 +1264,9 @@ function renderSmartNote() {
       if (unconfirmed.length > 6) html += `<div style="margin-top:2px">…另有 ${unconfirmed.length - 6} 格</div>`;
     }
   }
-  el.innerHTML = html;
-  el.style.display = 'block';
+  el.className = 'summary-banner ' + kind;
+  el.innerHTML = `<div>${html}</div>`;
+  el.style.display = 'flex';
 }
 
 /* =============================================================
