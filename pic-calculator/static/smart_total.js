@@ -91,6 +91,15 @@
       const label = rowLabel(table[r], parse);
       if (label && isTotalLabel(label)) totalRows.push({ r, label });
     }
+    // 使用者按「是，當合計」確認過的列：標籤被 OCR 截斷（「小計」→「小」）時，
+    // 自動判斷會整列漏驗，這時以人工指定為準
+    const manual = new Set(opts.extraTotalRows || []);
+    for (const r of manual) {
+      if (!totalRows.some((t) => t.r === r)) {
+        totalRows.push({ r, label: rowLabel(table[r], parse) || `第 ${r + 1} 列`, manual: true });
+      }
+    }
+    totalRows.sort((a, b) => a.r - b.r);
     const totalSet = new Set(totalRows.map((x) => x.r));
 
     const confirmed = [];

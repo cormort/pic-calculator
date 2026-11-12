@@ -175,6 +175,8 @@
   .chip.minus { color: var(--minus); background: #fdedec; border-color: #f5b7b1; }
   .chip.target { color: var(--target); background: #fef5e7; border-color: #f8c471; }
   .chip-note { font-size: .8rem; color: var(--muted); }
+  .smart-actions { margin: 6px 0 0 18px; line-height: 1.9; }
+  .smart-actions li { margin-bottom: 2px; }
 
   /* 表頭固定：長表格往下捲時還看得到欄號，橫向捲動時列號固定（.row-head 用 sticky left） */
   table.data thead th { position: sticky; top: 0; z-index: 3; }
@@ -212,6 +214,8 @@
   /* 低信心格：左側橘線；智慧合計：綠底 */
   table.data td.cell-low { box-shadow: inset 3px 0 0 var(--warn); }
   table.data td.cell-fixed { text-decoration: underline dotted var(--info); text-underline-offset: 4px; }
+  /* 數字欄裡看不出是數字的格：紅虛線，並排除在驗算之外 */
+  table.data td.cell-bad-num { outline: 2px dashed var(--error); outline-offset: -3px; }
   table.data td.cell-smart-ok { background: #eafaf1; }
 
   /* 列範圍 */
@@ -655,6 +659,9 @@ let lastResult = null;
 let smartActive = false, smartInfo = null;   // 智慧合計
 const smartBad = new Set();                  // "r,c" -> 自動比對不符的合計
 const smartMarks = new Set();                // "r,c" -> 自動比對成功的合計
+const manualTotalRows = new Set();           // 使用者按「是，當合計」確認的列
+let smartUnparsed = [];                      // 數字欄裡看不出是數字的格 {r,c,text}
+let smartSuspects = [];                      // 標籤像合計但沒被認出來的列 {r,label}
 
 /* =============================================================
    檔案 / 相機
@@ -1325,6 +1332,7 @@ async function analyzeImage() {
     tableData = repaired.data;
     cellConfidence = built.confidence;
     cellRepairs = new Map(repaired.repairs.map(x => [x.r + ',' + x.c, x]));
+    manualTotalRows.clear();
     const blurry = ocrConfidence < LOW_CONFIDENCE;
     if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容' + (blurry ? '（圖片解析度太低或太模糊）' : ''));
     clearSmart();
@@ -1364,6 +1372,9 @@ function resetAll() {
   tableData = [];
   cellConfidence = [];
   cellRepairs.clear();
+  manualTotalRows.clear();
+  smartUnparsed = [];
+  smartSuspects = [];
   clearSmart();
   clearSelections();
 }
@@ -1426,6 +1437,10 @@ function renderTable() {
       if (low) titles.push(`OCR 信心 ${Math.round(conf * 100)}%，建議核對`);
       const title = titles.length ? ` title="${escapeHtml(titles.join(' / '))}"` : '';
       if (fix) cellCls += ' cell-fixed';
+      if (smartUnparsed.some(u => u.r === r && u.c === c)) {
+        cellCls += ' cell-bad-num';
+        titles.push('這格不像數字，沒有列入驗算 — 請修正');
+      }
       html += `<td class="${cellCls}" data-r="${r}" data-c="${c}" contenteditable="true" inputmode="decimal"${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
     }
     html += '</tr>';
@@ -1592,6 +1607,74 @@ function clearSmart() {
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
 
+/* 數字欄裡「有字但不是數字」的格：這些格會被排除在加總外，若不講清楚，
+   驗算就會冒出一堆假錯誤（表格明明對，卻顯示合計不符） */
+// 金額欄的長相：純數字、可帶千分位／小數／括號負數／幣別符號。
+// 項次欄（1、1-1、2、2-1…）也會被 _num 解析成數字，但它不是金額欄，
+// 拿它去驗算或把「小」「2-1文」當成壞數字都只是雜訊
+const AMOUNT_SHAPE = /^[-(（$]?\d[\d,]*(?:\.\d+)?[)）%]?$/;
+const NO_VALUE = /^[-–—－‐—/]+$/;   // 破折號／斜線＝這一格沒值，不算「看不懂」
+function isAmountColumn(values) {
+  const vals = values.map(v => String(v ?? '').trim())
+    .filter(v => v && !NO_VALUE.test(v.replace(/\s/g, '')));
+  if (vals.length < 2) return false;
+  const amounts = vals.filter(v => AMOUNT_SHAPE.test(v.replace(/\s/g, '')));
+  return amounts.length >= 2 && amounts.length / vals.length >= 0.6;
+}
+
+function headerRowCount() {
+  const el = typeof document !== 'undefined' && document.getElementById('headerRow');
+  return el ? Math.max(1, parseInt(el.value) || 1) : 1;
+}
+
+function unparsedNumericCells(table = tableData, headerRows = headerRowCount()) {
+  const out = [];
+  const cols = Math.max(0, ...table.map(r => r.length));
+  for (let c = 0; c < cols; c++) {
+    const vals = table.slice(headerRows).map(r => String(r?.[c] ?? '').trim());
+    if (!isAmountColumn(vals)) continue;            // 不是金額欄（項次欄、科目欄不算）
+    for (let r = headerRows; r < table.length; r++) {
+      const raw = String(table[r]?.[c] ?? '').trim();
+      if (!raw) continue;
+      if (!isNaN(Validator._num(raw))) continue;
+      if (/^[-–—－‐—/]+$/.test(raw)) continue;      // 破折號＝沒有值，不算錯
+      out.push({ r, c, text: raw });
+    }
+  }
+  return out;
+}
+
+/* 標籤被 OCR 截斷的合計列：「小計」讀成「小」時 isTotalLabel 認不得，
+   整列就不會被驗算 —— 這種漏驗不會有任何錯誤訊息，只能靠問使用者補回來 */
+const TOTALISH = /^[小合總总計计综総線綫結结]{1,2}$/;
+function suspiciousTotalRows(table = tableData, known = new Set()) {
+  const out = [];
+  for (let r = 0; r < table.length; r++) {
+    if (known.has(r)) continue;
+    const label = String(SmartTotals.rowLabel(table[r], Validator._num) || '').replace(/\s/g, '');
+    if (!label || label.length > 2 || !TOTALISH.test(label)) continue;
+    if (SmartTotals.isTotalLabel(label)) continue;
+    if (!table[r].some(v => !isNaN(Validator._num(v)))) continue;   // 沒有數字就不是合計列
+    out.push({ r, label });
+  }
+  return out;
+}
+
+function confirmTotalRow(r) {
+  manualTotalRows.add(r);
+  runSmartTotals();
+}
+
+function jumpToCell(r, c) {
+  const td = document.querySelector(`#data-table td[data-r="${r}"][data-c="${c}"]`);
+  if (!td) return;
+  document.querySelectorAll('#data-table td.cell-review').forEach(el => el.classList.remove('cell-review'));
+  td.classList.add('cell-review');
+  td.scrollIntoView({ block: 'center', inline: 'center' });
+  td.focus();
+  selectCellText(td);
+}
+
 function runSmartTotals(showEmpty = false) {
   if (!tableData.length) return;
   if (typeof SmartTotals === 'undefined') {
@@ -1607,9 +1690,7 @@ function runSmartTotals(showEmpty = false) {
   const ncols = Math.max(...tableData.map(r => r.length), 0);
   const numericCols = [];
   for (let c = 0; c < ncols; c++) {
-    let n = 0;
-    for (const row of tableData) if (!isNaN(Validator._num(row?.[c]))) n++;
-    if (n >= 2) numericCols.push(c);
+    if (isAmountColumn(tableData.map(r => r?.[c]))) numericCols.push(c);
   }
   const percentCols = new Set();
   for (let c = 0; c < ncols; c++) {
@@ -1620,7 +1701,10 @@ function runSmartTotals(showEmpty = false) {
     parse: v => Validator._num(v),
     tolerance: v => Math.max(SMART_TOL_ABS, Math.abs(v) * SMART_TOL_REL),
     numericCols, percentCols,
+    extraTotalRows: [...manualTotalRows],
   });
+  smartUnparsed = unparsedNumericCells(tableData);
+  smartSuspects = suspiciousTotalRows(tableData, new Set(info.totalRows.map(t => t.r)));
   smartMarks.clear();
   info.confirmed.forEach(hit => smartMarks.add(hit.r + ',' + hit.c));
   smartBad.clear();
@@ -1646,7 +1730,8 @@ function renderSmartNote() {
     html = `✅ <strong>自動驗算：最後一列等於上方各列加總</strong>（${confirmed.length} 欄相符）。可直接修改數字或點欄/列手動調整。`;
   } else if (!totalRows.length) {
     kind = 'warn';
-    html = '⚠️ <strong>尚未驗算</strong>：找不到「合計/小計/總計/總額」列。請點欄號或列號手動驗算。';
+    html = '⚠️ <strong>尚未驗算</strong>：找不到「合計/小計/總計/總額」列。'
+      + (smartSuspects.length ? '下面有幾列看起來就是合計，確認一下就好。' : '請點欄號或列號手動驗算。');
   } else if (checked === 0) {
     kind = 'warn';
     html = `⚠️ <strong>尚未驗算</strong>：找到 ${totalRows.length} 個合計列，但沒有可試算的數字。請點欄號或列號手動驗算。`;
@@ -1668,8 +1753,34 @@ function renderSmartNote() {
       if (unconfirmed.length > 6) html += `<div style="margin-top:2px">…另有 ${unconfirmed.length - 6} 格</div>`;
     }
   }
+  // 漏驗的合計列（標籤被截斷）＋ 數字欄裡看不出是數字的格：這兩種「沒有錯誤訊息、
+  // 但結果不可信」的狀況要主動問，而不是留給使用者自己發現
+  const extra = [];
+  if (smartSuspects.length) {
+    const items = smartSuspects.slice(0, 4).map(x =>
+      `<li>第 ${x.r + 1} 列的標籤只讀到「${escapeHtml(x.label)}」— 是合計列嗎？`
+      + ` <button class="btn btn-outline btn-sm" onclick="confirmTotalRow(${x.r})">是，當合計</button></li>`).join('');
+    extra.push(`<ul class="smart-actions">${items}</ul>`);
+    if (!unconfirmed.length && !confirmed.length) kind = 'warn';
+  }
+  if (smartUnparsed.length) {
+    const items = smartUnparsed.slice(0, 4).map(x =>
+      `<li>第 ${x.r + 1} 列／第 ${x.c + 1} 欄「${escapeHtml(x.text)}」不像數字，已排除在驗算外`
+      + ` <button class="btn btn-ghost btn-sm" onclick="jumpToCell(${x.r}, ${x.c})">跳到這格</button></li>`).join('');
+    extra.push(`<ul class="smart-actions">${items}</ul>`);
+    if (smartUnparsed.length > 4) extra.push(`<div class="chip-note">…另有 ${smartUnparsed.length - 4} 格</div>`);
+  }
+  // 有幾格看不出是數字時，合計不符很可能是辨識問題，不是表格算錯 —— 講清楚免得白忙
+  if (unconfirmed.length && smartUnparsed.length) {
+    html += `<div class="chip-note" style="margin-top:4px">上面不符的合計，有一部分可能是「看不出是數字」的格子造成的。</div>`;
+  }
+  // 涵蓋範圍：避免「沒驗到」被誤讀成「驗過而且正確」
+  if (totalRows.length) {
+    html += `<div class="chip-note" style="margin-top:4px">本次涵蓋 ${totalRows.length} 個合計列、${checked} 格`
+      + (smartUnparsed.length ? `；${smartUnparsed.length} 格排除在外` : '') + '。</div>';
+  }
   el.className = 'summary-banner ' + kind;
-  el.innerHTML = `<div>${html}</div>`;
+  el.innerHTML = `<div>${html}${extra.join('')}</div>`;
   el.style.display = 'flex';
 }
 
@@ -1707,18 +1818,22 @@ function validate() {
     keywords: { trigger: [], exclude: [] }, sumDirection: 'bottom',
   });
   lastResult = result;
+  smartUnparsed = unparsedNumericCells(tableData);   // 讓表格標出「看不出是數字」的格
   renderTable();
 
+  // 有格子看不懂時，錯誤清單要順帶說明，免得使用者以為表格真的算錯
+  const parsedNote = smartUnparsed.length
+    ? `　另有 ${smartUnparsed.length} 格看不出是數字，已排除在驗算外（紅虛線）。` : '';
   const errs = result.errorList.filter(e => !e.ok);
   if (errs.length > 0) {
-    renderSummary({ kind: 'err', text: `❌ 發現 ${errs.length} 個錯誤，差異總額 ${result.totalDiff.toLocaleString(undefined,{maximumFractionDigits:2})}` });
+    renderSummary({ kind: 'err', text: `❌ 發現 ${errs.length} 個錯誤，差異總額 ${result.totalDiff.toLocaleString(undefined,{maximumFractionDigits:2})}${parsedNote}` });
     const list = document.getElementById('error-list');
     list.innerHTML = errs.map(e => `<li><span class="ei">🔴</span><span>${e.message}</span></li>`).join('');
     document.getElementById('error-card').style.display = 'block';
   } else {
     const okCount = Array.from(Validator.errors.values()).filter(e => e.ok).length;
     if (okCount > 0)
-      renderSummary({ kind: 'ok', text: `✅ 驗算正確 — 共確認 ${okCount} 個合計值` });
+      renderSummary({ kind: 'ok', text: `✅ 驗算正確 — 共確認 ${okCount} 個合計值${parsedNote}` });
     else
       renderSummary({ kind: 'warn', text: '⚠️ 驗算完成但未檢查到任何合計欄位 (可能選取設定不適用此資料)。' });
     document.getElementById('error-card').style.display = 'none';

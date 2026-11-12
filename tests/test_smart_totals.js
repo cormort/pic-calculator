@@ -9,6 +9,8 @@ function parseNum(v) {
   let s = String(v).trim();
   if (!s || s === "-" || s === "－") return NaN;
   if (/[a-zA-Z一-鿿]/.test(s)) return NaN;
+  // 與 index.html 的 Validator._num 一致：夾雜其他符號（"12,345 ]"）就不是數字
+  if (!/^[-\d\.,，\(\)\$%％\s]+$/.test(s)) return NaN;
   s = s.replace(/[,，$\s]/g, "").replace(/[%％]/g, "");
   if (s.startsWith("(") && s.endsWith(")")) s = "-" + s.replace(/[()]/g, "");
   const n = parseFloat(s);
@@ -106,5 +108,50 @@ const opts = { parse: parseNum, tolerance, numericCols: [1, 2], percentCols: [] 
   assert.ok(!bad.implicit);
   assert.strictEqual(bad.unconfirmed.length, 0);
 }
+
+// ---- index.html 裡的兩個「提醒用」純函式 ----
+const fs = require("fs");
+const path = require("path");
+const html = fs.readFileSync(path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
+const src = [
+  html.match(/const TOTALISH = [^\n]*\n/)[0],
+  html.match(/const AMOUNT_SHAPE = [^\n]*\n/)[0],
+  html.match(/const NO_VALUE = [^\n]*\n/)[0],
+  html.match(/function isAmountColumn\(values\) \{[\s\S]*?\n\}/)[0],
+  html.match(/function unparsedNumericCells\(table = tableData, headerRows = headerRowCount\(\)\) \{[\s\S]*?\n\}/)[0],
+  html.match(/function suspiciousTotalRows\(table = tableData, known = new Set\(\)\) \{[\s\S]*?\n\}/)[0],
+].join("\n");
+const Validator = { _num: parseNum };
+const { unparsedNumericCells, suspiciousTotalRows } = new Function("Validator", "SmartTotals",
+  src + "\n; return { unparsedNumericCells, suspiciousTotalRows };")(Validator, SmartTotals);
+
+// 數字欄裡混了看不出是數字的字 → 要抓出來（否則會被靜靜排除在加總外）
+const badTable = [
+  ["科目", "金額"],
+  ["租金", "1,000"],
+  ["水電", "12,345 ]"],
+  ["修繕", "—"],
+  ["雜支", "500"],
+];
+const bad = unparsedNumericCells(badTable, 1);
+assert.strictEqual(bad.length, 1);
+assert.deepStrictEqual(bad[0], { r: 2, c: 1, text: "12,345 ]" });
+
+// 文字欄不算數字欄，中文標籤不該被當成壞數字
+assert.deepStrictEqual(unparsedNumericCells([["科目", "金額"], ["租金", "1,000"], ["水電", "2,000"]], 1), []);
+
+// 合計標籤被 OCR 截斷（小計 → 小）→ 要主動問使用者
+const cutTable = [
+  ["科目", "金額"],
+  ["租金", "1,000"],
+  ["水電", "2,000"],
+  ["小", "3,000"],
+];
+const sus = suspiciousTotalRows(cutTable);
+assert.deepStrictEqual(sus, [{ r: 3, label: "小" }]);
+// 使用者確認後就不再問
+assert.deepStrictEqual(suspiciousTotalRows(cutTable, new Set([3])), []);
+// 正常文字列不要亂問
+assert.deepStrictEqual(suspiciousTotalRows([["科目", "金額"], ["租金", "1,000"], ["水電", "2,000"]]), []);
 
 console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷");
