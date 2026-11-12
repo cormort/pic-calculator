@@ -667,6 +667,7 @@ const smartMarks = new Set();                // "r,c" -> 自動比對成功的�
 const manualTotalRows = new Set();           // 使用者按「是，當合計」確認的列
 let smartUnparsed = [];                      // 數字欄裡看不出是數字的格 {r,c,text}
 let smartSuspects = [];                      // 標籤像合計但沒被認出來的列 {r,label}
+let smartMultiply = null;                    // 乘法關係（單價×數量＝金額）的比對結果
 
 /* =============================================================
    檔案 / 相機
@@ -1640,6 +1641,7 @@ function fmtNum(n) { return n.toLocaleString(undefined, { maximumFractionDigits:
 
 function clearSmart() {
   smartActive = false; smartInfo = null; smartMarks.clear(); smartBad.clear();
+  smartMultiply = null;
   const el = document.getElementById('smart-note');
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
@@ -1702,6 +1704,21 @@ function confirmTotalRow(r) {
   runSmartTotals();
 }
 
+/* 套用乘法關係算出來的金額：只改金額欄 —— 單價／數量哪一格讀錯無從得知，
+   另外兩個候選值在橫幅裡列出來讓使用者自己判斷。 */
+function applyMultiplyFix(r, c, value) {
+  if (!tableData[r]) return;
+  while (tableData[r].length <= c) tableData[r].push('');
+  const n = Number(value);
+  tableData[r][c] = isNaN(n) ? String(value) : n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  if (!cellConfidence[r]) cellConfidence[r] = [];
+  while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
+  cellConfidence[r][c] = 1;          // 人工確認過的格
+  cellRepairs.delete(r + ',' + c);   // 不再是「自動整理」的格
+  runSmartTotals();
+  renderSummary({ kind: 'ok', text: `已把第 ${r + 1} 列／第 ${c + 1} 欄改成 ${tableData[r][c]}（依「單價 × 數量」推得）。` });
+}
+
 function jumpToCell(r, c) {
   const td = document.querySelector(`#data-table td[data-r="${r}"][data-c="${c}"]`);
   if (!td) return;
@@ -1746,8 +1763,22 @@ function runSmartTotals(showEmpty = false) {
   info.confirmed.forEach(hit => smartMarks.add(hit.r + ',' + hit.c));
   smartBad.clear();
   info.unconfirmed.forEach(hit => smartBad.add(hit.r + ',' + hit.c));
+  // 乘法關係（單價×數量＝金額）：加總驗算抓不到「被加數本身就被讀錯」的情況，
+  // 明細表／憑證／估價單幾乎都是這個結構，所以順手一起驗
+  smartMultiply = (typeof SmartTotals.multiplyCheck === 'function')
+    ? SmartTotals.multiplyCheck(tableData, {
+        parse: v => Validator._num(v),
+        tolerance: v => Math.max(SMART_TOL_ABS, Math.abs(v) * SMART_TOL_REL),
+        headerRows: headerRowCount(),
+        totalRows: info.totalRows.map(t => t.r),
+      })
+    : null;
+  if (smartMultiply) {
+    smartMultiply.failed.forEach(f => smartBad.add(f.r + ',' + smartMultiply.cols.amount));
+  }
   smartInfo = info;
-  smartActive = info.totalRows.length > 0 || showEmpty;
+  smartActive = info.totalRows.length > 0 || showEmpty
+    || !!(smartMultiply && smartMultiply.checked > 0);
   renderTable();
   renderSmartNote();
 }
@@ -1788,6 +1819,31 @@ function renderSmartNote() {
       }).join('');
       html += `<ul style="margin:6px 0 0 18px;line-height:1.7">${items}</ul>`;
       if (unconfirmed.length > 6) html += `<div style="margin-top:2px">…另有 ${unconfirmed.length - 6} 格</div>`;
+    }
+  }
+  // 乘法關係的結果：加總相符不代表每個被加數都對，所以這一塊單獨講
+  if (smartMultiply && smartMultiply.checked) {
+    const m = smartMultiply, n = m.checked;
+    if (!m.failed.length) {
+      html += `<div class="chip-note" style="margin-top:4px">✅ 乘法驗算：${n} 列「單價 × 數量 ＝ 金額」全部相符。</div>`;
+    } else {
+      kind = 'err';
+      html += `<div style="margin-top:6px"><strong>❌ 乘法驗算：${m.failed.length}/${n} 列「單價 × 數量」不等於金額</strong></div>`;
+      const items = m.failed.slice(0, 4).map(f => {
+        const lbl = SmartTotals.rowLabel(tableData[f.r], Validator._num) || `第 ${f.r + 1} 列`;
+        const alts = [];
+        if (f.fix.unit !== undefined) alts.push(`單價應為 ${fmtNum(f.fix.unit)}`);
+        if (f.fix.qty !== undefined) alts.push(`數量應為 ${fmtNum(f.fix.qty)}`);
+        return `<li>「${escapeHtml(lbl)}」：${fmtNum(f.unit)} × ${fmtNum(f.qty)} ＝ ${fmtNum(f.expected)}，`
+          + `實際 ${fmtNum(f.actual)}`
+          + ` <button class="btn btn-outline btn-sm" onclick="applyMultiplyFix(${f.r}, ${m.cols.amount}, ${f.expected})"`
+          + ` title="把金額改成乘法算出來的值">改成 ${fmtNum(f.expected)}</button>`
+          + ` <button class="btn btn-ghost btn-sm" onclick="jumpToCell(${f.r}, ${m.cols.amount})">跳到這格</button>`
+          + (alts.length ? `<div class="chip-note">也可能是 ${alts.join(' 或 ')}</div>` : '')
+          + `</li>`;
+      }).join('');
+      html += `<ul class="smart-actions">${items}</ul>`;
+      if (m.failed.length > 4) html += `<div class="chip-note">…另有 ${m.failed.length - 4} 列</div>`;
     }
   }
   // 漏驗的合計列（標籤被截斷）＋ 數字欄裡看不出是數字的格：這兩種「沒有錯誤訊息、

@@ -145,7 +145,74 @@
     return { totalRows, confirmed, unconfirmed };
   }
 
-  const api = { isTotalLabel, rowLabel, candidateTotals, evaluate };
+  /* ---- 乘法關係：單價 × 數量 ＝ 金額 ----
+   * 明細表、憑證、標案估價單的金額幾乎都是「單價 × 數量」，而 OCR 錯一格時
+   * 「加總驗算」往往還是過（錯的是被加數本身），只有乘法關係抓得出來。
+   * 只回傳比對結果，不改資料。
+   */
+  const UNIT_HEAD = /^單價|^價格|^unitprice|^price|^單價元/i;
+  const QTY_HEAD = /^數量|^件數|^次數|^人[數次]|^時數|^qty|^quantity/i;
+  const AMT_HEAD = /^(金額|總價|價金|amount|totalamount)/i;
+
+  function headText(v) {
+    return String(v ?? "").replace(/[\s（）()：:]/g, "");
+  }
+
+  /* 表頭可能不只一列（合併儲存格），所以把前 headerRows 列的同一欄串起來比對。
+   * 三個角色必須是不同的欄，否則寧可不算（猜錯欄比不驗更糟）。 */
+  function findMultiplyCols(table, headerRows) {
+    const hdr = Math.max(1, headerRows | 0 || 1);
+    const rows = table.slice(0, hdr);
+    const ncols = Math.max(0, ...rows.map((r) => (r || []).length));
+    const texts = [];
+    for (let c = 0; c < ncols; c++) texts.push(rows.map((r) => headText(r?.[c])).join(""));
+    const pick = (re, taken) => texts.findIndex((t, i) => t && !taken.includes(i) && re.test(t));
+    const unit = pick(UNIT_HEAD, []);
+    const qty = pick(QTY_HEAD, [unit]);
+    const amount = pick(AMT_HEAD, [unit, qty]);
+    return unit >= 0 && qty >= 0 && amount >= 0 ? { unit, qty, amount } : null;
+  }
+
+  function multiplyCheck(table, opts) {
+    const parse = opts.parse;
+    const tolerance = opts.tolerance || (() => 0);
+    const headerRows = Math.max(1, opts.headerRows | 0 || 1);
+    const totalSet = new Set(opts.totalRows || []);
+    const cols = findMultiplyCols(table, headerRows);
+    if (!cols) return null;
+
+    const round2 = (v) => Math.round(v * 100) / 100;
+    const confirmed = [];
+    const failed = [];
+    for (let r = headerRows; r < table.length; r++) {
+      if (totalSet.has(r)) continue;                       // 合計列由 evaluate() 負責
+      const unit = parse(table[r]?.[cols.unit]);
+      const qty = parse(table[r]?.[cols.qty]);
+      const actual = parse(table[r]?.[cols.amount]);
+      if (isNaN(unit) || isNaN(qty) || isNaN(actual)) continue;   // 空列、文字列
+      if (qty === 0 && unit === 0) continue;               // 「－」列不值得驗
+      const expected = round2(unit * qty);
+      const tol = Math.max(tolerance(actual), 0.005);
+      if (Math.abs(expected - actual) <= tol) {
+        confirmed.push({ r, unit, qty, actual, expected });
+        continue;
+      }
+      // 反推「哪一格讀錯才會成立」：金額錯（最常見）、單價錯、數量錯各給一個候選
+      const fix = { amount: expected };
+      if (qty) {
+        const u = round2(actual / qty);
+        if (u !== unit) fix.unit = u;
+      }
+      if (unit) {
+        const q = round2(actual / unit);
+        if (q !== qty) fix.qty = q;
+      }
+      failed.push({ r, unit, qty, actual, expected, fix });
+    }
+    return { cols, headerRows, confirmed, failed, checked: confirmed.length + failed.length };
+  }
+
+  const api = { isTotalLabel, rowLabel, candidateTotals, evaluate, findMultiplyCols, multiplyCheck };
   root.SmartTotals = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

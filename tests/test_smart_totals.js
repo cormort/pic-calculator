@@ -154,4 +154,58 @@ assert.deepStrictEqual(suspiciousTotalRows(cutTable, new Set([3])), []);
 // 正常文字列不要亂問
 assert.deepStrictEqual(suspiciousTotalRows([["科目", "金額"], ["租金", "1,000"], ["水電", "2,000"]]), []);
 
-console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷");
+// ---- 乘法關係：單價 × 數量 ＝ 金額 ----
+const mulTable = [
+  ["項次", "會計科目", "單價", "數量", "金額"],
+  ["1-1", "主持人費", "25,000", "8", "200,000"],
+  ["1-2", "兼任助理", "12,000", "15", "180,000"],
+  ["1-3", "臨時工資", "1,400", "120", "168,000"],
+  ["小計", "", "", "", "548,000"],
+];
+const mulOk = SmartTotals.multiplyCheck(mulTable, {
+  parse: parseNum, tolerance, headerRows: 1, totalRows: [4],
+});
+assert.deepStrictEqual(mulOk.cols, { unit: 2, qty: 3, amount: 4 });
+assert.strictEqual(mulOk.checked, 3);          // 合計列不算進去
+assert.strictEqual(mulOk.confirmed.length, 3);
+assert.deepStrictEqual(mulOk.failed, []);
+
+// 金額被讀錯（180,000 → 18,000）：加總可能照樣錯得剛好，只有乘法抓得到
+const mulBad = SmartTotals.multiplyCheck(
+  [mulTable[0], mulTable[1], ["1-2", "兼任助理", "12,000", "15", "18,000"], mulTable[4]],
+  { parse: parseNum, tolerance, headerRows: 1, totalRows: [] },
+);
+assert.strictEqual(mulBad.failed.length, 1);
+assert.strictEqual(mulBad.failed[0].expected, 180000);
+assert.strictEqual(mulBad.failed[0].actual, 18000);
+assert.strictEqual(mulBad.failed[0].fix.amount, 180000);
+assert.strictEqual(mulBad.failed[0].fix.unit, 1200);   // 反推：單價可能是 1,200
+assert.strictEqual(mulBad.failed[0].fix.qty, 1.5);     // 或數量是 1.5
+
+// 小數單價（單價 12.5 × 8 = 100）要算得過
+const mulFloat = SmartTotals.multiplyCheck(
+  [["單價", "數量", "金額"], ["a", "12.5", "8", "100"]].map((r, i) => (i === 0 ? r : r.slice(1))),
+  { parse: parseNum, tolerance, headerRows: 1 },
+);
+assert.strictEqual(mulFloat.checked, 1);
+assert.strictEqual(mulFloat.failed.length, 0);
+
+// 缺欄（沒有數量欄）→ 不算，回 null（猜錯欄比不驗更糟）
+assert.strictEqual(SmartTotals.multiplyCheck(
+  [["科目", "單價", "金額"], ["租金", "1,000", "12,000"]],
+  { parse: parseNum, tolerance, headerRows: 1 }), null);
+
+// 表頭有空白與括號也要認得（「單價 (元)」「數 量」）
+assert.deepStrictEqual(
+  SmartTotals.findMultiplyCols([["科目", "單價 (元)", "數 量", "金額（元）"]], 1),
+  { unit: 1, qty: 2, amount: 3 },
+);
+
+// 數量 0（贈品列）不該被當成錯誤
+const mulZero = SmartTotals.multiplyCheck(
+  [["單價", "數量", "金額"], ["贈品", "500", "0", "0"]],
+  { parse: parseNum, tolerance, headerRows: 1 },
+);
+assert.deepStrictEqual(mulZero.failed, []);
+
+console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷、乘法關係（單價×數量）");
