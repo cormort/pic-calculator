@@ -187,10 +187,14 @@ OCR 信心值可不可信？
 2. **科目名稱比對忽略標點**：「、」這類標點常漏讀，會讓科目／合計列的比對失敗。
    比對時把標點去掉是低風險改動，只是還沒做。
 3. **表格結構模型（SLANet 這類）**。沒有內部格線、合併儲存格、複雜表頭這幾類，靠調整切欄
-   規則已經到極限（實測 borderless 只有 23%）—— 需要一個直接輸出「哪個字屬於哪一格」的
-   小模型（ONNX 約 7.7MB、MIT）。接法：只在「偵測到的格線太少」時啟用，當作 fallback，
-   不影響有格線表格現在的 97%。工作量估 3–5 小時（token 字典、貪婪解碼、HTML→grid 還原、
-   文字歸屬），驗收用 `bench/probe/`。
+   規則已經到極限（實測 borderless 只有 23%／數字 0%）—— 需要一個直接輸出「哪個字屬於哪一格」
+   的小模型（ONNX 約 7.7MB、MIT）。**已驗證模型本身可行**：用官方 `TableLabelDecode`
+   （`merge_no_span_structure=True`，字典要把 `<td>` 換成 `<td></td>`、`sos` 是座標佔位符）
+   解碼，合成表 20/20 格全對。**卡點在瀏覽器**：可用的 ONNX 版本內含一個 `Loop` 子圖，
+   onnxruntime-web 建 session 時就以 `ShapeInferenceError` 拒絕（桌機版 ORT 只警告、照樣跑）。
+   下一步：拿掉／展開那個 Loop，或在 Linux 用舊版 paddle2onnx 重轉。完整調查與可重現指令見
+   [`bench/experiments/slanet_probe.py`](bench/experiments/slanet_probe.py)，驗收門檻是
+   `bench/probe/`。
 
 ### B. 程式裡有、介面沒接
 
