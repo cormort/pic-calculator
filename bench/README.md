@@ -59,9 +59,25 @@ node bench/compare.js out/probe.json --set=probe
 實測格級／數字格 **100%**。沒有文字層的掃描 PDF 會自動退回 OCR（`/tmp/scanned.pdf` 那種）。
 用瀏覽器手動驗：選這個 PDF → 摘要應該出現「本頁取自 PDF 文字層」。
 
-**混合 PDF**（同一份文件幾頁電子檔、幾頁掃描）也實測過：三頁的檔案（文字頁 → 掃描頁 → 文字頁），
-逐頁判斷、來回換頁都正確 —— 文字頁顯示「取自 PDF 文字層」，掃描頁自動退回 OCR 並提示
-「這一頁是掃描影像（沒有文字層）」。
+**混合 PDF**（同一份文件幾頁電子檔、幾頁掃描）：`probe/shots/mixed-3pages.pdf`
+（文字頁 → 掃描頁 → 文字頁）。有現成的回歸腳本：
+
+```bash
+node bench/check_mixed_pdf.js                       # 需要本機 8765 服務
+node bench/check_mixed_pdf.js --base=https://cormort.github.io/pic-calculator/
+```
+
+它會逐頁驗「有沒有走文字層」與欄列數，並且來回換頁一次確認狀態不會殘留：
+
+```
+PASS  第 1 頁 電子檔：經費明細表  13×5  文字層
+PASS  第 2 頁 掃描頁：同一張表的圖  13×5  掃描頁(OCR)
+PASS  第 3 頁 電子檔：資產負債表  20×3  文字層
+PASS  第 1 頁 電子檔：經費明細表  13×5  文字層
+```
+
+（腳本細節：換頁前要先把上一頁的結果清掉、等「頁碼正確 + 摘要出現來源判斷」，
+只等「摘要變了」會撞到換頁途中短暫的「選取已重置」，結果讀到上一頁。）
 
 合併儲存格（`colspan`／`rowspan`）沒有放進 probe：模型的合併猜測每次可能不同，
 逐格對答案不穩定。排列與渲染改由 `tests/test_structure_table.js` 用合成資料直接驗
