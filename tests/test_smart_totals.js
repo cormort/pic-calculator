@@ -94,4 +94,17 @@ const opts = { parse: parseNum, tolerance, numericCols: [1, 2], percentCols: [] 
   assert.ok(!SmartTotals.isTotalLabel("現金及約當現金"));
 }
 
+// 沒有合計標籤：最後一列等於上方加總 → 視為合計且相符；不相符則不報錯
+{
+  const t = [["總金額"], ["122,226"], ["2,353"], ["2,765"], ["1,170,285"]];
+  t[4] = [String(122226 + 2353 + 2765)];
+  const ok = SmartTotals.evaluate(t, { parse: parseNum, tolerance, numericCols: [0] });
+  assert.strictEqual(ok.implicit, true);
+  assert.strictEqual(ok.confirmed.length, 1);
+  assert.strictEqual(ok.confirmed[0].r, 4);
+  const bad = SmartTotals.evaluate([["總金額"], ["1"], ["2"], ["99"]], { parse: parseNum, tolerance, numericCols: [0] });
+  assert.ok(!bad.implicit);
+  assert.strictEqual(bad.unconfirmed.length, 0);
+}
+
 console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷");

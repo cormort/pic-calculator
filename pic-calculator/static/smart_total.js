@@ -109,6 +109,30 @@
         }
       }
     }
+    // 沒有合計標籤（例如表頭只寫「總金額」，最後一格就是合計）：
+    // 每個數字欄的最後一個數字若等於上方連續數字（至少 2 個）的加總，就當成合計。
+    // 只認相符的情況；不相符時無從判斷那格是不是合計，所以不報錯
+    if (!totalRows.length) {
+      const hits = [];
+      for (const c of numericCols) {
+        if (percentCols.has(c)) continue;
+        let r = table.length - 1;
+        while (r >= 0 && isNaN(parse(table[r]?.[c]))) r--;
+        let sum = 0, n = 0;
+        for (let k = r - 1; k >= 0; k--) {
+          const v = parse(table[k]?.[c]);
+          if (isNaN(v)) break;
+          sum += v; n++;
+        }
+        const actual = parse(table[r]?.[c]);
+        if (n >= 2 && Math.abs(sum - actual) <= tolerance(actual))
+          hits.push({ r, c, label: rowLabel(table[r], parse) || "最後一列", actual });
+      }
+      if (hits.length) {
+        const rows = [...new Set(hits.map((h) => h.r))].map((r) => ({ r, label: hits.find((h) => h.r === r).label }));
+        return { totalRows: rows, confirmed: hits, unconfirmed: [], implicit: true };
+      }
+    }
     return { totalRows, confirmed, unconfirmed };
   }
 

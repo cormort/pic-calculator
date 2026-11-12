@@ -559,6 +559,13 @@ const Validator = {
     if (typeof v === 'number') return isNaN(v) ? NaN : v;
     let s = v.toString().trim();
     if (s === '') return NaN;
+    // 金額前後常帶幣別（NT$、USD、NTS＝$ 被讀成 S）或手寫打勾被讀成的 V、J、√：
+    // 英文字母與 $ 只出現在數字前後、合計不超過 6 個字，中間又是單一個數字時，只取數字。
+    // 字母夾在數字中間（Q3 2024、2023 vs 2024）就不算數字。
+    // ponytail: 「A 100」「ISO 9001」這種短英文＋數字仍會被當成數字；金額欄很少見，遇到再加例外
+    s = s.replace(/[√✓✔]/g, ' ').trim();
+    const money = s.match(/^([A-Za-z$\s]*?)([-(（]?\s*\d[\d,，.]*(?:[,，.]\s+\d[\d,，.]*)*\s*[)）]?\s*[%％]?)\s*([A-Za-z$元]*)$/);
+    if (money && (money[1] + money[3]).replace(/\s/g, '').length <= 6) s = money[2];
     if (/[a-zA-Z一-龥]/.test(s)) return NaN;
     if (!/^[-\d\.,，\(\)\$%\s]+$/.test(s)) return NaN;
     s = s.replace(/[,，\$\s]/g, '').replace(/[%％]/g, '');
@@ -1332,11 +1339,14 @@ function renderSmartNote() {
     if (el) { el.style.display = 'none'; el.innerHTML = ''; }
     return;
   }
-  const { totalRows, confirmed, unconfirmed } = smartInfo;
+  const { totalRows, confirmed, unconfirmed, implicit } = smartInfo;
   // 判斷結果用整條橫幅：綠＝全部相符、紅＝有不符、黃＝沒驗到（不代表正確）
   let html, kind;
   const checked = confirmed.length + unconfirmed.length;
-  if (!totalRows.length) {
+  if (implicit) {
+    kind = 'ok';
+    html = `✅ <strong>自動驗算：最後一列等於上方各列加總</strong>（${confirmed.length} 欄相符）。可直接修改數字或點欄/列手動調整。`;
+  } else if (!totalRows.length) {
     kind = 'warn';
     html = '⚠️ <strong>尚未驗算</strong>：找不到「合計/小計/總計/總額」列。請點欄號或列號手動驗算。';
   } else if (checked === 0) {

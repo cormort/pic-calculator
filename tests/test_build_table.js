@@ -14,20 +14,30 @@ const rangeSrc = html.match(/function selectRange\(arr, anchor, idx\) \{[\s\S]*?
   .replace(/\n\nfunction cycleSelection$/, "");
 
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
-const Validator = {
-  _num(v) {
-    if (v === null || v === undefined || v === "") return NaN;
-    if (typeof v === "number") return v;
-    let s = v.toString().trim();
-    if (s === "") return NaN;
-    if (/[a-zA-Z一-龥]/.test(s)) return NaN;
-    if (!/^[-\d\.,，\(\)\$%\s]+$/.test(s)) return NaN;
-    s = s.replace(/[,，\$\s]/g, "").replace(/[%％]/g, "");
-    if (s.startsWith("(") && s.endsWith(")")) s = "-" + s.replace(/[\(\)]/g, "");
-    const n = parseFloat(s);
-    return isNaN(n) ? NaN : n;
-  },
-};
+// 用 index.html 裡真正的數字解析，避免測試與實作各寫一份
+const numSrc = html.match(/  _num\(v\) \{[\s\S]*?\n  \},/)[0];
+const Validator = eval("({" + numSrc + "})");
+
+// 幣別與手寫打勾不影響數字解析
+assert.strictEqual(Validator._num("NT$ 122,226"), 122226);
+assert.strictEqual(Validator._num("V NT$ 2,353"), 2353);
+assert.strictEqual(Validator._num("JN NT$ 24,900"), 24900);
+assert.strictEqual(Validator._num("NTS 1,170,285"), 1170285);
+assert.strictEqual(Validator._num("√ 9,900"), 9900);
+assert.strictEqual(Validator._num("√ NT$ 833,000"), 833000);
+assert.ok(isNaN(Validator._num("營業收入")));
+assert.strictEqual(Validator._num("USD 1,200"), 1200);
+assert.strictEqual(Validator._num("NI$ 300"), 300);
+assert.strictEqual(Validator._num("20,000 NTD"), 20000);
+assert.strictEqual(Validator._num("1,000元"), 1000);
+assert.strictEqual(Validator._num("NT$ (500)"), -500);
+assert.strictEqual(Validator._num("NT$ -166,981"), -166981);
+assert.strictEqual(Validator._num("95, 500"), 95500);
+assert.ok(isNaN(Validator._num("Q3 2024")));
+assert.ok(isNaN(Validator._num("2023 vs 2024")));
+assert.ok(isNaN(Validator._num("1100 現金")));
+assert.ok(isNaN(Validator._num("Grand total 1,000 dollars")));
+
 let signs = new Map();
 eval(buildSrc);
 eval(rangeSrc);

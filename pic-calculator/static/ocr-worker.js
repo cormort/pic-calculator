@@ -148,7 +148,9 @@ async function detectTable(bitmap) {
   }
   if (!best) return null;
 
-  const pad = 0.01, f = (v) => Math.min(1, Math.max(0, v));
+  // 框離圖片邊緣不到 4% 時直接貼齊邊緣：表格常一路延伸到照片邊上，
+  // 模型的框會略為內縮，切掉最外側的字（實拍：9,900 被切成 9,90）
+  const pad = 0.01, f = (v) => { v = Math.min(1, Math.max(0, v)); return v < 0.04 ? 0 : v > 0.96 ? 1 : v; };
   const x1 = f(best.x1 / W - pad), y1 = f(best.y1 / H - pad);
   const x2 = f(best.x2 / W + pad), y2 = f(best.y2 / H + pad);
   return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
