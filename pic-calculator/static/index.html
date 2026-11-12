@@ -846,6 +846,7 @@ let analyzing = false;
    ============================================================= */
 // pdf.js 只在真的選了 PDF 時才下載（PWA 離線使用時不會拖慢啟動）
 const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs';
+let pdfjsLib = null;
 const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs';
 let pdfDoc = null, pdfPage = 1, pdfName = '';
 
@@ -862,6 +863,7 @@ async function openPdf(file) {
   if (hint) hint.textContent = '載入 PDF（第一次需要下載 pdf.js）…';
   try {
     const pdfjs = await import(PDFJS_URL);
+    pdfjsLib = pdfjs;
     pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
     pdfDoc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
     pdfName = (file.name || 'document.pdf').replace(/\.pdf$/i, '');
@@ -871,6 +873,55 @@ async function openPdf(file) {
     renderPdfNav();
     if (hint) hint.textContent = `無法讀取 PDF：${err.message || err}（可先自行截圖）`;
   }
+}
+
+/* PDF 文字層 → 我們 pipeline 認得的 words（x1,y1,x2,y2,cx,cy,h,score）。
+   電子檔 PDF 的文字是向量、座標精確，直接拿比 OCR 準得多（也不必下載模型）。
+   要注意字型編碼：中文常被輸出成「康熙部首」（⾦、⼈、⽫），NFKC 一次就修好。 */
+function pdfTextWords(items, viewport) {
+  const out = [];
+  for (const item of items) {
+    const text = (item.str || '').normalize('NFKC').trim();
+    if (!text) continue;
+    const m = pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const fontSize = Math.hypot(m[2], m[3]) || viewport.scale * 10;
+    const x1 = m[4];
+    const x2 = x1 + Math.max(item.width * viewport.scale, fontSize * 0.3);
+    const baseline = m[5];
+    const y1 = baseline - fontSize * 0.85;
+    const y2 = baseline + fontSize * 0.25;
+    out.push({
+      text, x1, x2, y1, y2,
+      cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, h: y2 - y1, score: 1,
+    });
+  }
+  return out;
+}
+
+// 有文字層才用（門檻寬鬆：>= 8 個字塊且總字數 >= 20，避免把目錄頁/封面當表格）
+function hasUsableTextLayer(words) {
+  if (!words || words.length < 8) return false;
+  const chars = words.reduce((n, w) => n + w.text.length, 0);
+  return chars >= 20;
+}
+
+// 依框選的四角（比例座標）過濾文字，超出表格範圍的字不要
+function filterWordsByQuad(words, q, size) {
+  if (!q || !size) return words;
+  const isFull = Math.abs(q[0][0]) < 1e-6 && Math.abs(q[0][1]) < 1e-6
+    && Math.abs(q[1][0] - 1) < 1e-6 && Math.abs(q[2][1] - 1) < 1e-6;
+  if (isFull) return words;
+  // q 是 0~1 的比例、words 是這一頁的像素座標，先換算
+  const poly = q.map(([x, y]) => [x * size.width, y * size.height]);
+  const inside = (x, y) => {
+    let hit = false;
+    for (let i = 0, j = 3; i < 4; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+  };
+  return words.filter(w => inside(w.cx, w.cy));
 }
 
 async function renderPdfPage(n) {
@@ -892,7 +943,15 @@ async function renderPdfPage(n) {
     const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
     pdfPage = target;
     const pageFile = new File([blob], `${pdfName}-p${target}.png`, { type: 'image/png' });
-    loadFile(pageFile, { fromPdf: true });   // 走原本的預覽 → 自動框選 → 自動辨識
+    // 有文字層就別 OCR：向量文字的座標與內容都是精確的
+    let words = null;
+    try { words = pdfTextWords((await page.getTextContent()).items, viewport); } catch (err) { words = null; }
+    loadFile(pageFile, {
+      fromPdf: true,
+      textWords: hasUsableTextLayer(words) ? words : null,
+      pageBlob: blob,
+      pageSize: { width: viewport.width, height: viewport.height },
+    });
     renderPdfNav();
   } catch (err) {
     if (hint) hint.textContent = `第 ${target} 頁轉換失敗：${err.message || err}`;
@@ -916,6 +975,16 @@ function loadFile(file, opts = {}) {
     pdfDoc = null;               // 選了圖片就離開 PDF 模式
     renderPdfNav();
   }
+  // PDF 文字層：這一頁不必 OCR，words 直接餵 buildTable（座標就是這一頁的像素座標）
+  pendingText = opts.textWords ? { words: opts.textWords, size: opts.pageSize || null } : null;
+  if (opts.textWords && opts.pageBlob) {
+    createImageBitmap(opts.pageBlob).then(bmp => {
+      try { ocrPreview?.close?.(); } catch (e) { /* 忽略 */ }
+      ocrPreview = bmp;
+      ocrPreviewScale = 1;   // 文字座標與頁面圖同一套
+    }).catch(() => { /* 沒有底圖就用列表 */ });
+  }
+  if (!opts.fromPdf) pendingText = null;
   currentFile = file;
   quadTouched = false;
   setQuad(FULL_QUAD);
@@ -1181,10 +1250,11 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v33';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v36';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
+let pendingText = null;   // PDF 文字層：{ words }，有值就跳過 OCR
 
 function renderBackendNote() {
   const el = document.getElementById('backend-note');
@@ -1731,8 +1801,19 @@ async function analyzeImage() {
         ]);
       } catch (err) { /* 偵測失敗已在 loadFile 提示 */ }
     }
-    const words = await ocrWords(currentFile, quad);
-    const structured = lastStructure;
+    let words, structured = null, fromTextLayer = false;
+    if (pendingText) {
+      // 文字層：座標與內容都精確，直接組表（worker 與模型都不用跑）
+      words = filterWordsByQuad(pendingText.words, quad, pendingText.size);
+      ocrConfidence = 1;
+      ocrGrid = null;
+      lastStructure = null;
+      fromTextLayer = true;
+      pendingText = null;
+    } else {
+      words = await ocrWords(currentFile, quad);
+      structured = lastStructure;
+    }
     const built = structured
       ? { data: structured.grid, confidence: structured.conf, boxes: structured.boxes, spans: structured.spans }
       : buildTable(words, ocrGrid);
@@ -1745,7 +1826,7 @@ async function analyzeImage() {
     cellConfidence = built.confidence;
     cellRepairs = new Map([...repaired.repairs, ...stripped.repairs].map(x => [x.r + ',' + x.c, x]));
     manualTotalRows.clear();
-    const blurry = ocrConfidence < LOW_CONFIDENCE;
+    const blurry = !fromTextLayer && ocrConfidence < LOW_CONFIDENCE;
     if (!tableData.length) throw new Error('未能從圖片中辨識出表格內容' + (blurry ? '（圖片解析度太低或太模糊）' : ''));
     clearSmart();
     clearSelections();
@@ -1755,6 +1836,9 @@ async function analyzeImage() {
     // 實測（bench/probe/g-borderless.png）：這類表格只有 23% 格正確、數字格 0%。
     const vLines = (ocrGrid?.v || []).length, hLines = (ocrGrid?.h || []).length;
     lastGridWeak = vLines < 3 || hLines < 3;
+    const textLayerNote = fromTextLayer
+      ? `　📄 本頁取自 <strong>PDF 文字層</strong>（向量文字，未經 OCR 辨識，內容就是原檔的字）。`
+      : '';
     const gridNote = lastGridWeak
       ? (structured
         ? `　📐 幾乎沒有內部格線（直線 ${vLines} 條、橫線 ${hLines} 條），已改用<strong>表格結構模型</strong>`
@@ -1770,9 +1854,11 @@ async function analyzeImage() {
       ? ' <button class="btn btn-warn btn-sm" onclick="retryHighAccuracy()">🔁 用高精度模型重辨識</button>' : '';
     renderSummary(blurry
       ? { kind: 'warn', text: `⚠️ 圖片解析度太低或太模糊（${tierLabel}模型，辨識信心 ${Math.round(ocrConfidence * 100)}%），以下數字很可能有錯，請改用原始檔或放大後再截圖。${size}。${lowNote}${fixNote}${retryBtn}${gridNote}` }
-      : lastGridWeak
-        ? { kind: 'warn', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}${gridNote}${retryBtn}` }
-        : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}` });
+      : fromTextLayer
+        ? { kind: 'info', text: `讀取完成 — ${size}。${textLayerNote}${fixNote}請點擊欄號或列號進行驗算。` }
+        : lastGridWeak
+          ? { kind: 'warn', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}${gridNote}${retryBtn}` }
+          : { kind: 'info', text: `辨識完成（${tierLabel}模型）— ${size}。${lowNote}${fixNote}請點擊欄號或列號進行驗算。${retryBtn}` });
     renderTable();
     reviewPos = -1;
     renderReviewButton();
@@ -1802,6 +1888,7 @@ function resetAll() {
   tableData = [];
   cellConfidence = [];
   cellSpans = [];
+  pendingText = null;
   cellRepairs.clear();
   manualTotalRows.clear();
   smartUnparsed = [];
