@@ -361,9 +361,37 @@ function geometricSplit(text, frac) {
   return [text.slice(0, idx), text.slice(idx)];
 }
 
+/* 每一列有幾個字框（依 y 分群）。用途：判斷「這一列的格子有沒有被合併」——
+ * 跨格線補救是逐框重跑兩次辨識，模糊實拍慢到 36 秒就是它造成的。
+ * 真正該補救的那一列，字框數一定比同表其他列少（兩格被框成一個字）；
+ * 字框數已達典型值的列，跨線的框通常是跨欄標題或長註記，重切只會白花時間。 */
+function rowShape(results) {
+  const heights = results.map((r) => r.box.height).sort((a, b) => a - b);
+  const medH = heights.length ? heights[heights.length >> 1] : 0;
+  const tol = Math.max(6, medH * 0.6);
+  const order = results.map((_, i) => i)
+    .sort((a, b) => (results[a].box.y + results[a].box.height / 2) - (results[b].box.y + results[b].box.height / 2));
+  const rowOf = new Array(results.length).fill(0);
+  const counts = [];
+  let cur = -1, lastCy = -Infinity;
+  for (const i of order) {
+    const r = results[i], cy = r.box.y + r.box.height / 2;
+    if (cur < 0 || cy - lastCy > tol) { cur = counts.length; counts.push(0); }
+    rowOf[i] = cur;
+    counts[cur] += 1;
+    lastCy = cy;
+  }
+  const typical = counts.length ? counts.slice().sort((a, b) => a - b)[counts.length >> 1] : 0;
+  return { rowOf, counts, typical };
+}
+
 async function splitStraddling(canvas, results, grid, svc) {
   const vLines = grid?.v || [];
   if (!vLines.length) return results;
+  const shape = rowShape(results);
+  // 只有在「同表確實有某一列比典型少字框」時才啟用省時判斷。
+  // 若每一列都一樣少（整表系統性合併），關掉它，維持原本逐框補救。
+  const gate = shape.counts.length > 2 && shape.typical > Math.min(...shape.counts);
   const squash = (t) => String(t || '').replace(/\s+/g, '');
   // 「1,234」「(500)」這種整格就是數字的不拆 —— 拆開會變成兩格假數字，整欄驗算就毀了
   const isNumeric = (t) => {
@@ -372,7 +400,11 @@ async function splitStraddling(canvas, results, grid, svc) {
   };
   const out = [];
   let budget = 24;   // 每次辨識最多補 24 次，避免大表格把時間吃掉
-  for (const r of results) {
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    // 這一列的字框數已達典型值 → 格子沒被合併，跨線的框多半是跨欄標題／長註記，
+    // 重切只會白花兩次辨識（量測：模糊實拍 36s → 見 README §7）
+    if (gate && shape.counts[shape.rowOf[i]] >= shape.typical) { out.push(r); continue; }
     const cy = r.box.y + r.box.height / 2;
     const cuts = vLines
       .map((l) => l.a + l.b * cy)
