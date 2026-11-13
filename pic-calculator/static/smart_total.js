@@ -289,6 +289,7 @@
     }
 
     const confirmed = [], unconfirmed = [], unverifiable = [];
+    const ended = rows.length > 0 && /(總計|合計)$/.test(rows[rows.length - 1].label.replace(/\s+/g, ""));
     for (let i = 0; i < rows.length; i++) {
       const p = rows[i];
       let j = i + 1;
@@ -305,8 +306,27 @@
           const sum = ks.reduce((t, k) => t + k.vals[c], 0);
           const hit = { r: p.r, c, label: p.label, actual: p.vals[c], candidates: [sum] };
           if (Math.abs(p.vals[c] - sum) <= tol) confirmed.push(hit);
-          else if (j >= rows.length) unverifiable.push(hit);   // 子項一路到頁尾：下一頁可能還有
+          // 子項一路到頁尾：下一頁可能還有。但最後一列是「總計」就表示這張表到此結束，對不上就是錯
+          else if (j >= rows.length && !ended) unverifiable.push(hit);
           else unconfirmed.push(hit);
+        }
+        continue;
+      }
+      // H3 總計列（資產總計、負債及淨值總計）＝上一個總計列之後、最上層各科目的加總
+      if (/(總計|合計)$/.test(p.label.replace(/\s+/g, "")) && j === i + 1) {
+        let from = i - 1;
+        while (from >= 0 && !/(總計|合計)$/.test(rows[from].label.replace(/\s+/g, ""))) from--;
+        const above = rows.slice(from + 1, i);
+        if (above.length >= 2) {
+          const minX = Math.min(...above.map((k) => k.x));
+          const tops = above.filter((k) => k.x <= minX + eps);
+          for (const c of cols) {
+            if (p.vals[c] == null || !tops.some((k) => k.vals[c] != null)) continue;
+            const sum = tops.reduce((t, k) => t + (k.vals[c] || 0), 0);
+            const hit = { r: p.r, c, label: p.label, actual: p.vals[c], candidates: [sum] };
+            // 對不上時不下結論：這一頁可能只是續頁，最上層科目在別頁（單看這頁無從分辨）
+            (Math.abs(p.vals[c] - sum) <= tol ? confirmed : unverifiable).push(hit);
+          }
         }
         continue;
       }
@@ -351,7 +371,55 @@
     };
   }
 
-  const api = { isTotalLabel, rowLabel, candidateTotals, evaluate, findMultiplyCols, multiplyCheck, hierarchy };
+  /* ---- 跨頁：同一份文件哪幾頁是同一張表往下接 ----
+     pages：依頁序的 [{ table, indents, labelCol }]。回傳 [[頁索引…], …]，每一串是一張接續的表。
+     規則（實測 59 份平衡表都是「單數頁資產、雙數頁負債」交錯接續，收支表則是單純往下接）：
+       - 這一頁第一列是全文件最淺的縮排（資產／負債／業務收入）→ 新的一張表
+       - 否則接到「還沒驗完」的表上（有上層科目的子項排到頁尾）；有好幾張沒驗完時，
+         接到最久沒被接過的那一張（左右對開的兩張表輪流出現）
+       - 沒有科目欄、或欄數／科目欄位置不同的頁不接 */
+  function pageStreams(pages, opts) {
+    const eps = opts.indentTol ?? 3;
+    // 每頁第一個與最後一個「有科目、有數字」的列的縮排；沒有科目欄的頁是 null
+    const ends = pages.map((pg) => {
+      if (!hierarchy(pg.table, pg.indents, { ...opts, labelCol: pg.labelCol, headerRows: 0 })) return null;
+      const xs = [];
+      for (let r = 0; r < pg.table.length; r++) {
+        const row = pg.table[r] || [];
+        if (String(row[pg.labelCol] ?? "").trim() && pg.indents[r] != null
+          && row.some((t, c) => c !== pg.labelCol && (/^[-－–—]$/.test(String(t ?? "").trim()) || !isNaN(opts.parse(t))))) {
+          xs.push(pg.indents[r]);
+        }
+      }
+      return xs.length ? { first: xs[0], last: xs[xs.length - 1] } : null;
+    });
+    const top = Math.min(...ends.filter(Boolean).map((e) => e.first));
+    const width = (pg) => Math.max(0, ...pg.table.map((r) => (r || []).length));
+    const streams = [];
+    let tick = 0;
+    pages.forEach((pg, i) => {
+      const e = ends[i];
+      if (!e) { streams.push({ pages: [i], open: false }); return; }
+      let s = null;
+      if (e.first > top + eps) {
+        // 接得上：那張表還有沒驗完的上層科目，或它的最後一列正是這一頁第一列的上層
+        s = streams.filter((x) => x.labelCol === pg.labelCol && x.width === width(pg)
+          && (x.open || e.first > x.last + eps))
+          .sort((a, b) => a.t - b.t)[0] || null;
+      }
+      if (!s) { s = { pages: [], table: [], indents: [], labelCol: pg.labelCol, width: width(pg) }; streams.push(s); }
+      s.pages.push(i);
+      s.table.push(...pg.table);
+      s.indents.push(...pg.indents);
+      s.t = ++tick;
+      s.last = e.last;
+      const h = hierarchy(s.table, s.indents, { ...opts, labelCol: s.labelCol, headerRows: 0 });
+      s.open = !!h && h.unverifiable.length > 0;
+    });
+    return streams.map((x) => x.pages);
+  }
+
+  const api = { isTotalLabel, rowLabel, candidateTotals, evaluate, findMultiplyCols, multiplyCheck, hierarchy, pageStreams };
   root.SmartTotals = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -564,7 +564,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=52"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=53"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -1387,7 +1387,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v52';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v53';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2594,16 +2594,60 @@ function jumpToCell(r, c) {
 // 科目欄＝文字格最多的那一欄；縮排＝那一格文字的左緣
 function hierarchyCheck(percentCols) {
   if (!tableExact || cellBoxes.length !== tableData.length || typeof SmartTotals.hierarchy !== 'function') return null;
-  const ncols = Math.max(...tableData.map(r => r.length), 0);
-  let labelCol = 0, most = -1;
-  for (let c = 0; c < ncols; c++) {
-    const n = tableData.filter(r => String(r?.[c] ?? '').trim() && isNaN(Validator._num(r[c])) && !/^[-－]$/.test(String(r[c]).trim())).length;
-    if (n > most) { most = n; labelCol = c; }
+  const isVal = t => /^[-－–—]$/.test(String(t ?? '').trim()) || !isNaN(Validator._num(t));
+  const labelColOf = rows => {
+    const ncols = Math.max(...rows.map(r => r.length), 0);
+    let col = 0, most = -1;
+    for (let c = 0; c < ncols; c++) {
+      // 只數「同一列別的格子有數字」的列：表頭與頁邊的直排字（備／產）不能把科目欄搶走
+      const n = rows.filter(r => String(r?.[c] ?? '').trim() && !isVal(r[c]) && r.some((t, k) => k !== c && isVal(t))).length;
+      if (n > most) { most = n; col = c; }
+    }
+    return col;
+  };
+  const pageOf = (rows, boxes) => {
+    const labelCol = labelColOf(rows);
+    return { table: rows, labelCol, indents: rows.map((_, r) => boxes[r]?.[labelCol]?.x1 ?? null) };
+  };
+  const opts = { parse: v => Validator._num(v), tolerance: SMART_TOL_ABS, percentCols };
+  const cur = pageOf(tableData, cellBoxes);
+
+  // 同一份 PDF 在批次裡已經辨識過的各頁（跨頁驗算用）
+  const me = batch[batchIndex];
+  const doc = me?.page ? batch.filter(b => b.file === me.file && (b === me || b.result?.exact)) : [];
+  const pages = doc.map(b => (b === me ? cur : pageOf(b.result.rows, b.result.boxes)));
+  const at = doc.indexOf(me);
+  if (pages.length > 1 && typeof SmartTotals.pageStreams === 'function') {
+    // 往下接：上層科目的子項排到下一頁（平衡表單數頁資產、雙數頁負債；收支表直接接續）
+    const mine = SmartTotals.pageStreams(pages, opts).find(st => st.includes(at));
+    if (mine && mine.length > 1) {
+      const before = mine.slice(0, mine.indexOf(at)).reduce((n, k) => n + pages[k].table.length, 0);
+      const h = SmartTotals.hierarchy(mine.flatMap(k => pages[k].table), mine.flatMap(k => pages[k].indents),
+        { ...opts, labelCol: cur.labelCol, headerRows: 0 });
+      if (h) {
+        const here = list => list.map(x => ({ ...x, r: x.r - before })).filter(x => x.r >= 0 && x.r < tableData.length);
+        return { confirmed: here(h.confirmed), unconfirmed: here(h.unconfirmed), unverifiable: here(h.unverifiable),
+          totalRows: here(h.totalRows), joined: mine.map(k => doc[k].page) };
+      }
+    }
   }
-  return SmartTotals.hierarchy(tableData, tableData.map((_, r) => cellBoxes[r]?.[labelCol]?.x1 ?? null), {
-    parse: v => Validator._num(v),
-    tolerance: SMART_TOL_ABS, labelCol, percentCols, headerRows: headerRowCount(),
-  });
+  const h = SmartTotals.hierarchy(tableData, cur.indents, { ...opts, labelCol: cur.labelCol, headerRows: headerRowCount() });
+  if (h || at < 1) return h;
+  // 往右接：跨頁寬表的右半頁沒有科目欄，逐列對應左半頁（上一頁）的科目與縮排
+  const left = pages[at - 1];
+  const leftRows = left.table.map((r, k) => k).filter(k => String(left.table[k][left.labelCol] ?? '').trim()
+    && left.indents[k] != null && left.table[k].some((t, c) => c !== left.labelCol && isVal(t)));
+  const myRows = tableData.map((r, k) => k).filter(k => tableData[k].some(isVal));
+  if (!leftRows.length || leftRows.length !== myRows.length) return null;
+  const b = SmartTotals.hierarchy(
+    myRows.map((k, n) => [left.table[leftRows[n]][left.labelCol], ...tableData[k]]),
+    leftRows.map(k => left.indents[k]),
+    { ...opts, labelCol: 0, percentCols: new Set([...percentCols].map(c => c + 1)), headerRows: 0 });
+  if (!b) return null;
+  const back = list => list.map(x => ({ ...x, r: myRows[x.r], c: x.c - 1 }));
+  return { confirmed: back(b.confirmed), unconfirmed: back(b.unconfirmed), unverifiable: back(b.unverifiable),
+    totalRows: back(b.totalRows.map(t => ({ ...t, c: 1 }))).map(({ r, label }) => ({ r, label })),
+    borrowed: doc[at - 1].page };
 }
 
 function runSmartTotals(showEmpty = false) {
@@ -2638,7 +2682,8 @@ function runSmartTotals(showEmpty = false) {
   // 賸餘＝收入−費用。這種表用「合計列＝上面全部加總」去驗只會整片誤報，
   // 所以驗得出層級時，平面加總對不上的格子不算錯（對得上的照樣算相符）
   const hier = hierarchyCheck(percentCols);
-  if (hier && hier.confirmed.length + hier.unconfirmed.length >= 3) {
+  // 跨頁接起來驗的表，這一頁可能只有幾列續頁的科目，一樣算層級報表
+  if (hier && (hier.joined || hier.borrowed || hier.confirmed.length + hier.unconfirmed.length >= 3)) {
     const rows = new Set(hier.totalRows.map(t => t.r));
     const flatOk = info.confirmed.filter(h => !rows.has(h.r));
     const flatRows = info.totalRows.filter(t => flatOk.some(h => h.r === t.r));
@@ -2646,6 +2691,8 @@ function runSmartTotals(showEmpty = false) {
     info.unconfirmed = hier.unconfirmed;
     info.totalRows = [...hier.totalRows, ...flatRows].sort((a, b) => a.r - b.r);
     info.unverifiable = hier.unverifiable;
+    info.joined = hier.joined || null;
+    info.borrowed = hier.borrowed || null;
     info.hier = true;
     delete info.implicit;
   }
@@ -2713,6 +2760,8 @@ function renderSmartNote() {
     if (smartInfo.hier) {
       html += '<div class="chip-note" style="margin-top:4px">📐 依科目縮排做<strong>層級驗算</strong>：'
         + '上層科目＝下層加總、賸餘／餘額＝同層各列加減。'
+        + (smartInfo.joined ? `已和第 ${smartInfo.joined.join('、')} 頁<strong>接起來一起驗</strong>。` : '')
+        + (smartInfo.borrowed ? `這一頁沒有科目欄，科目沿用<strong>第 ${smartInfo.borrowed} 頁</strong>（逐列對應）。` : '')
         + (smartInfo.unverifiable.length
           ? `另有 ${smartInfo.unverifiable.length} 格（${escapeHtml([...new Set(smartInfo.unverifiable.map(x => x.label))].slice(0, 3).join('、'))}）`
             + '的子項一路排到頁尾，可能接續下一頁，<strong>沒有驗</strong>。'
@@ -3072,6 +3121,10 @@ async function batchRunAll() {
     autoAnalyze = wasAuto;
     batchRunning = false;
     saveBatchResult();
+    // 跨頁驗算：前面的頁要等後面的頁辨識完才接得起來，把還有「沒驗」的頁重算一次
+    for (let i = 0; i < batch.length; i++) {
+      if (batch[i].page && batch[i].result && batch[i].stats?.unver) { batchIndex = i; restoreBatchResult(batch[i].result); }
+    }
     renderBatchBar();
     toggleBatchSummary(true);
   }
@@ -3147,6 +3200,7 @@ function currentTableStats() {
     cols: tableData.length ? Math.max(...tableData.map(r => r.length)) : 0,
     totals, bad, mul, diff,
     low: lowConfidenceCount(),
+    unver: (smartInfo && smartInfo.unverifiable) ? smartInfo.unverifiable.length : 0,
     badNum: (smartUnparsed || []).length,
     status: batchStatusOf(),
   };

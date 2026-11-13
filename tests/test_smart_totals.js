@@ -272,4 +272,27 @@ assert.strictEqual(SmartTotals.isTotalLabel("本期短絀"), true);
   assert.strictEqual(SmartTotals.hierarchy(noLabel, indents.slice(1), { ...opts, headerRows: 0 }), null);
 }
 
+// ---- 跨頁：哪幾頁是同一張表往下接 ----
+{
+  const opts = { parse: parseNum, tolerance: 2, percentCols: new Set() };
+  const pg = (rows) => ({ table: rows.map((r) => [r[1], r[2]]), indents: rows.map((r) => r[0]), labelCol: 0 });
+  // 左右對開的平衡表：1 資產(未完) 2 負債(未完) 3 資產續 4 負債續
+  const pages = [
+    pg([[10, "資產", "100"], [20, "流動資產", "60"]]),
+    pg([[10, "負債", "50"], [20, "流動負債", "30"]]),
+    pg([[20, "其他資產", "40"], [30, "什項資產", "40"]]),
+    pg([[20, "其他負債", "20"]]),
+  ];
+  assert.deepStrictEqual(SmartTotals.pageStreams(pages, opts), [[0, 2], [1, 3]]);
+  // 接起來之後「資產 = 流動資產 + 其他資產」驗得過
+  const joined = [...pages[0].table, ...pages[2].table];
+  const h = SmartTotals.hierarchy(joined, [...pages[0].indents, ...pages[2].indents], { ...opts, labelCol: 0 });
+  assert.ok(h.confirmed.some((x) => x.label === "資產") && !h.unverifiable.length && !h.unconfirmed.length);
+  // 每頁都從最上層開始（各校一頁的寬表）、或前一頁已經驗完：不接
+  const same = [pages[0], pg([[10, "資產", "7"], [20, "流動資產", "7"]])];
+  assert.deepStrictEqual(SmartTotals.pageStreams(same, opts), [[0], [1]]);
+  const done = [pg([[10, "資產", "60"], [20, "流動資產", "60"]]), pg([[20, "其他資產", "40"]])];
+  assert.deepStrictEqual(SmartTotals.pageStreams(done, opts), [[0], [1]]);
+}
+
 console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷、乘法關係（單價×數量）");
