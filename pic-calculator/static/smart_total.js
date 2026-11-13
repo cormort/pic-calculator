@@ -190,8 +190,8 @@
    * 只回傳比對結果，不改資料。
    */
   const UNIT_HEAD = /^單價|^價格|^unitprice|^price|^單價元/i;
-  const QTY_HEAD = /^數量|^件數|^次數|^人[數次]|^時數|^qty|^quantity/i;
-  const AMT_HEAD = /^(金額|總價|價金|amount|totalamount)/i;
+  const QTY_HEAD = /^數量|^單位數量|^件數|^次數|^人[數次]|^時數|^qty|^quantity/i;
+  const AMT_HEAD = /^(金額|實付金額|總價|複價|價金|amount|totalamount)/i;
 
   function headText(v) {
     return String(v ?? "").replace(/[\s（）()：:]/g, "");
@@ -419,7 +419,205 @@
     return streams.map((x) => x.pages);
   }
 
-  const api = { isTotalLabel, rowLabel, candidateTotals, evaluate, findMultiplyCols, multiplyCheck, hierarchy, pageStreams };
+  /* ---- 核銷憑證：發票、收據、領據、印領清冊、黏存單常見的金額關係 ----
+     只在「標籤認得出來、數字也讀得到」時才驗，認不出來就不出聲（不猜）。
+       稅額：銷售額 + 營業稅 = 總計；營業稅 = 銷售額 × 5%（稅額為 0 視為免稅／零稅率，不驗稅率）
+       大寫：新臺幣壹萬貳仟…元整 要等於總計／實領／合計
+       實領：應領 − 代扣所得稅 − 補充保費 = 實領（領據是一格一格的；印領清冊是一欄一欄的）
+       分批付款：應付總額 − 已付 − 本次付款 = 未付（政府支出憑證處理要點第 13 點，格式二）
+       外幣：外幣金額 × 折合率 = 新臺幣金額（同要點第 18 點）
+     大寫對應的是要點第 17 點「支出憑證之總數應用大寫數字書寫」。
+     ponytail: 格式依公開的統一發票／領據樣式與上述要點整理，沒有拿真實憑證量過；
+     遇到認不出的寫法再加標籤，不要放寬成模糊比對。 */
+  const CN_DIGIT = { 零: 0, 〇: 0, 壹: 1, 一: 1, 貳: 2, 贰: 2, 二: 2, 兩: 2, 參: 3, 叁: 3, 叄: 3, 三: 3, 肆: 4, 四: 4,
+    伍: 5, 五: 5, 陸: 6, 六: 6, 柒: 7, 七: 7, 捌: 8, 八: 8, 玖: 9, 九: 9 };
+  const CN_UNIT = { 拾: 10, 十: 10, 佰: 100, 百: 100, 仟: 1000, 千: 1000 };
+  const CN_CHARS = "零〇壹一貳贰二兩參叁叄三肆四伍五陸六柒七捌八玖九拾十佰百仟千萬億";
+
+  // 「壹萬貳仟參佰元」「零仟零佰壹拾貳萬參仟肆佰伍拾陸」→ 數字；有認不得的字回傳 NaN
+  function chineseAmount(text) {
+    const t = String(text ?? "").replace(/[\s,，]/g, "");
+    if (!t) return NaN;
+    let total = 0, section = 0, digit = 0, seen = false;
+    for (const ch of t) {
+      if (ch in CN_DIGIT) { digit = CN_DIGIT[ch]; seen = true; }
+      else if (ch in CN_UNIT) { section += (digit || (seen ? 0 : 1)) * CN_UNIT[ch]; if (!seen) section = CN_UNIT[ch]; digit = 0; seen = true; }
+      else if (ch === "萬") { total += (section + digit) * 1e4; section = 0; digit = 0; seen = true; }
+      else if (ch === "億") { total += (section + digit) * 1e8; section = 0; digit = 0; seen = true; }
+      else return NaN;
+    }
+    return seen ? total + section + digit : NaN;
+  }
+
+  function voucherChecks(table, opts) {
+    const parse = opts.parse;
+    const clean = (t) => String(t ?? "").replace(/[\s:：()（）*＊]/g, "");
+    // 找「標籤格」右邊同一列的第一個數字（或同一格裡標籤後面的數字）
+    const find = (re) => {
+      for (let r = 0; r < table.length; r++) {
+        const row = table[r] || [];
+        for (let c = 0; c < row.length; c++) {
+          const m = re.exec(clean(row[c]));
+          if (!m) continue;
+          // 標籤後面可以再帶幾個字與「$」（「扣繳稅額：$1,000」「實領金額：$8,789」）
+          const rest = clean(row[c]).slice(m.index + m[0].length);
+          const tail = rest.replace(/^[^\d\-]{0,6}/, "");
+          if (tail && !isNaN(parse(tail))) return { r, c, v: parse(tail) };
+          if (/\d/.test(rest)) continue;
+          for (let k = c + 1; k < row.length; k++) {
+            const v = parse(row[k]);
+            if (!isNaN(v)) return { r, c: k, v };
+          }
+        }
+      }
+      return null;
+    };
+    const checks = [];
+    const add = (kind, cell, expected, text) => checks.push({
+      kind, r: cell.r, c: cell.c, actual: cell.v, expected, ok: Math.abs(cell.v - expected) <= 1, text });
+
+    // 稅額
+    const sales = find(/^(銷售額合計|銷售額|未稅金額|未稅|合計|小計)/);
+    const tax = find(/^(營業稅額|營業稅|稅額|稅金)/);
+    const total = find(/^(總計|含稅總計|含稅金額|總額|應付總額)/);
+    if (sales && tax && total && sales.r !== total.r) {
+      add("tax-sum", total, sales.v + tax.v, "銷售額 + 營業稅 = 總計");
+      if (tax.v > 0) add("tax-rate", tax, Math.round(sales.v * 0.05), "營業稅 = 銷售額 × 5%");
+    }
+
+    // 大寫金額先找出來：整列的字接起來找（常被切成好幾格）。
+    // 表單上預印「拾 萬 仟 佰 拾 元整」讓人填空，最前面沒填的單位要去掉（「拾壹萬…」其實是壹萬）
+    const capRe = new RegExp(`[${CN_CHARS}]{2,}(?=[元圓整])`);
+    let capital = null;
+    for (let r = 0; r < table.length && !capital; r++) {
+      const text = (table[r] || []).map(clean).join("");
+      const m = capRe.exec(text);
+      if (!m) continue;
+      const vals = [chineseAmount(m[0].replace(/^[拾佰仟萬億十百千]+/, "")), chineseAmount(m[0])].filter((v) => !isNaN(v));
+      if (vals.length) capital = { r, vals, gross: /應領|應發|支領/.test(text) };
+    }
+
+    // 實領（一格一格）
+    const GROSS = /^(應領|應發|應付|支領|給付)(金額|總額)?$/, NET = /^(實領|實發|實付|淨領)(金額|數)?$/;
+    const WITHHOLD = /(所得稅|代扣稅|扣繳稅)/, NHI = /(補充保險?費|二代健保|健保費)/;
+    let gross = find(new RegExp(GROSS.source.replace("$", "")));
+    const net = find(new RegExp(NET.source.replace("$", "")));
+    // 臺大領款收據的「應領金額」只寫大寫、沒有數字：拿大寫當應領
+    let capIsGross = false;
+    if (!gross && capital && capital.gross) { gross = { r: capital.r, c: 0, v: capital.vals[0] }; capIsGross = true; }
+    const wh = find(WITHHOLD), nhi = find(NHI);
+    if (gross && net && (wh || nhi) && gross.r + "," + gross.c !== net.r + "," + net.c) {
+      add("net", net, gross.v - (wh ? wh.v : 0) - (nhi ? nhi.v : 0), "應領 − 代扣所得稅 − 補充保費 = 實領");
+    } else {
+      // 實領（印領清冊：表頭一欄一欄，每人一列）
+      for (let hr = 0; hr < Math.min(table.length, 4); hr++) {
+        const head = (table[hr] || []).map(clean);
+        const col = (re) => head.findIndex((h) => re.test(h));
+        const g = col(GROSS), n = col(NET), w = col(WITHHOLD), h2 = col(NHI);
+        if (g < 0 || n < 0 || (w < 0 && h2 < 0)) continue;
+        for (let r = hr + 1; r < table.length; r++) {
+          const gv = parse(table[r]?.[g]), nv = parse(table[r]?.[n]);
+          if (isNaN(gv) || isNaN(nv)) continue;
+          const sub = (c) => (c < 0 || isNaN(parse(table[r]?.[c])) ? 0 : parse(table[r][c]));
+          add("net", { r, c: n, v: nv }, gv - sub(w) - sub(h2), "應領 − 代扣所得稅 − 補充保費 = 實領");
+        }
+        break;
+      }
+    }
+
+    // 分批（期）付款表（要點格式二）：應付總額｜截至上次已付金額｜本次付款金額｜已付金額｜未付金額
+    //   已付金額 = 截至上次已付金額 + 本次付款金額；未付金額 = 應付總額 − 已付金額
+    // 沒有「截至上次」那一欄的簡化表，「已付」含不含本次都有人寫，兩種算法有一種對就算相符
+    const due = find(/^(應付總額|契約總價|契約金額|總價)/), paid = find(/^(已付金額|已付款|已付|累計已付)/);
+    const unpaid = find(/^(未付金額|未付款|未付|尚未付款)/), now = find(/^(本次付款金額|本次付款|本期付款|本次請款)/);
+    const prev = find(/^(截至上次已付金額|截至上次已付|截至上期已付|上次已付)/);
+    if (prev && now && paid) add("installment-paid", paid, prev.v + now.v, "截至上次已付 + 本次付款 = 已付金額");
+    if (due && paid && unpaid) {
+      const a = due.v - paid.v, b = a - (now ? now.v : 0);
+      add("installment", unpaid, prev || Math.abs(unpaid.v - a) <= 1 ? a : b, "應付總額 − 已付金額 = 未付金額");
+    }
+
+    // 支出科目／機關分攤表（要點格式三、四）：表頭的「總金額」= 分攤金額「合計」
+    const whole = find(/^總金額/), shareSum = find(/^合計/);
+    if (whole && shareSum && whole.r !== shareSum.r && !tax) add("share", shareSum, whole.v, "分攤金額合計 = 總金額");
+
+    // 外幣折合
+    const fx = find(/^(外幣金額|原幣金額|外幣)/), rate = find(/^(折合率|匯率|兌換率)/);
+    const ntd = find(/^(折合新臺幣|折合臺幣|新臺幣金額|臺幣金額)/);
+    if (fx && rate && ntd) add("fx", ntd, Math.round(fx.v * rate.v), "外幣金額 × 折合率 = 新臺幣金額");
+
+    // 出差旅費報告表：每一列「交通費 + 住宿費 + 雜費 … = 總計」。
+    // 表頭常是兩三列合併格，欄位認不準，所以要這張表至少有兩列真的符合這個關係才算數，
+    // 符合的列比不符合的多，才把不符合的列標出來
+    for (let hr = 0; hr < Math.min(table.length, 4); hr++) {
+      const tc = (table[hr] || []).findIndex((h) => /^(總計|合計|小計)$/.test(clean(h)));
+      if (tc < 1) continue;
+      const headOf = (c) => table.slice(0, hr + 2).map((row) => clean(row?.[c])).join("");
+      const cols = [];
+      for (let c = 0; c < tc; c++) if (/[費機車鐵船宿雜]|捷運/.test(headOf(c)) && !/[號日月年]|數量|單價/.test(headOf(c))) cols.push(c);
+      if (cols.length < 2) break;
+      const rowsHit = [];
+      for (let r = hr + 1; r < table.length; r++) {
+        const tv = parse(table[r]?.[tc]);
+        const parts = cols.map((c) => parse(table[r]?.[c])).filter((v) => !isNaN(v));
+        if (isNaN(tv) || !parts.length) continue;
+        rowsHit.push({ r, c: tc, v: tv, sum: parts.reduce((a, b) => a + b, 0) });
+      }
+      const good = rowsHit.filter((x) => Math.abs(x.v - x.sum) <= 1).length;
+      if (good >= 2 && good >= rowsHit.length - good) {
+        for (const x of rowsHit) add("row-sum", x, x.sum, "各項費用加總 = 總計");
+      }
+      break;
+    }
+
+    // 出差旅費報告表（直式，臺大與多數機關的格式）：費用項目一列一列、每天一欄，
+    // 「總計」列 = 上面各費用列加總。月、日、單據號數也是數字，不能加進去 ——
+    // 一般的合計驗算會把單據號數一起加而誤報，所以這幾列交給這裡驗（ownRows）
+    const ownRows = [];
+    const labelOf = (row) => {
+      let t = "";
+      for (const cell of row || []) { if (!isNaN(parse(cell)) && String(cell ?? "").trim()) break; t += clean(cell); }
+      return t;
+    };
+    const labels = table.map(labelOf);
+    const docRow = labels.findIndex((t) => /^單據號數/.test(t));
+    const sumRow = labels.findIndex((t) => /^總計/.test(t));
+    if (docRow >= 0 && sumRow >= 0) {
+      const EXPENSE = /費|飛機|高鐵|火車|汽車|機車|捷運|船舶|自行車|陸運/;
+      const spend = [];
+      for (let r = 0; r < sumRow; r++) if (r !== docRow && EXPENSE.test(labels[r]) && !/^(月|日|起訖|工作|單據|總計)/.test(labels[r])) spend.push(r);
+      const width = Math.max(0, ...table.map((row) => (row || []).length));
+      if (spend.length >= 2) {
+        for (let c = 0; c < width; c++) {
+          const tv = parse(table[sumRow]?.[c]);
+          const parts = spend.map((r) => parse(table[r]?.[c])).filter((v) => !isNaN(v));
+          if (isNaN(tv) || !parts.length) continue;
+          add("col-sum", { r: sumRow, c, v: tv }, parts.reduce((x, y) => x + y, 0), "各項費用加總 = 總計");
+        }
+        ownRows.push(sumRow);
+      }
+    }
+
+    // 大寫金額 = 數字金額。大寫寫的是哪個數各家不同：臺大領款收據寫應領金額，發票寫總計。
+    // 先看同一列的數字，再看總計／應領／實領，有一個相符就算對
+    if (capital && !capIsGross) {
+      const r = capital.r;
+      let same = null;
+      for (let c = 0; c < (table[r] || []).length && !same; c++) {
+        const v = parse(table[r][c]);
+        if (!isNaN(v)) same = { r, c, v };
+      }
+      const cands = [same, total, gross, net,
+        find(/^(實收數額|實收金額|實領|實付|合計|總額|金額合計|核銷金額)/)].filter(Boolean);
+      const match = (x) => capital.vals.find((v) => Math.abs(x.v - v) <= 1);
+      const hit = cands.find((x) => match(x) !== undefined) || cands[0];
+      if (hit) add("capital", hit, match(hit) ?? capital.vals[0], "大寫金額 = 數字金額");
+    }
+    return { checks, failed: checks.filter((x) => !x.ok), checked: checks.length, ownRows };
+  }
+
+  const api = { isTotalLabel, rowLabel, candidateTotals, evaluate, findMultiplyCols, multiplyCheck, hierarchy, pageStreams,
+    chineseAmount, voucherChecks };
   root.SmartTotals = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

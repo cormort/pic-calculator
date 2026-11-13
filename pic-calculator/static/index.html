@@ -564,7 +564,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=53"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=54"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -822,6 +822,7 @@ const smartMarks = new Set();                // "r,c" -> 自動比對成功的�
 const manualTotalRows = new Set();           // 使用者按「是，當合計」確認的列
 let smartUnparsed = [];                      // 數字欄裡看不出是數字的格 {r,c,text}
 let smartSuspects = [];                      // 標籤像合計但沒被認出來的列 {r,label}
+let smartVoucher = null;                     // 核銷憑證的金額關係（稅額、大寫、實領、分批付款…）
 let smartMultiply = null;                    // 乘法關係（單價×數量＝金額）的比對結果
 
 /* =============================================================
@@ -1387,7 +1388,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v53';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v54';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2392,6 +2393,7 @@ function fmtNum(n) { return n.toLocaleString(undefined, { maximumFractionDigits:
 function clearSmart() {
   smartActive = false; smartInfo = null; smartMarks.clear(); smartBad.clear();
   smartMultiply = null;
+  smartVoucher = null;
   const el = document.getElementById('smart-note');
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
@@ -2715,9 +2717,26 @@ function runSmartTotals(showEmpty = false) {
   if (smartMultiply) {
     smartMultiply.failed.forEach(f => smartBad.add(f.r + ',' + smartMultiply.cols.amount));
   }
+  // 核銷憑證（發票、收據、領據、印領清冊、分批付款表、旅費報告表）：認得出標籤才驗
+  smartVoucher = (typeof SmartTotals.voucherChecks === 'function')
+    ? SmartTotals.voucherChecks(tableData, { parse: v => Validator._num(v) }) : null;
+  if (smartVoucher) {
+    // 旅費報告表的「總計」列由憑證規則驗（一般合計會把單據號數也加進去）
+    const own = new Set(smartVoucher.ownRows || []);
+    if (own.size) {
+      info.confirmed = info.confirmed.filter(h => !own.has(h.r));
+      info.unconfirmed = info.unconfirmed.filter(h => !own.has(h.r));
+      info.totalRows = info.totalRows.filter(t => !own.has(t.r));
+      smartMarks.clear(); info.confirmed.forEach(h => smartMarks.add(h.r + ',' + h.c));
+      smartBad.clear(); info.unconfirmed.forEach(h => smartBad.add(h.r + ',' + h.c));
+      if (smartMultiply) smartMultiply.failed.forEach(f => smartBad.add(f.r + ',' + smartMultiply.cols.amount));
+    }
+    smartVoucher.checks.forEach(x => (x.ok ? smartMarks : smartBad).add(x.r + ',' + x.c));
+  }
   smartInfo = info;
   smartActive = info.totalRows.length > 0 || showEmpty
-    || !!(smartMultiply && smartMultiply.checked > 0);
+    || !!(smartMultiply && smartMultiply.checked > 0)
+    || !!(smartVoucher && smartVoucher.checked > 0);
   renderTable();
   renderSmartNote();
   renderReviewButton();   // 乘法／合計不符也要算進「待核對」的數字，否則按鈕上的數量會是舊的
@@ -2777,6 +2796,23 @@ function renderSmartNote() {
       }).join('');
       html += `<ul style="margin:6px 0 0 18px;line-height:1.7">${items}</ul>`;
       if (unconfirmed.length > 6) html += `<div style="margin-top:2px">…另有 ${unconfirmed.length - 6} 格</div>`;
+    }
+  }
+  // 核銷憑證的金額關係
+  if (smartVoucher && smartVoucher.checked) {
+    const v = smartVoucher;
+    const names = [...new Set(v.checks.map(x => x.text))];
+    if (kind === 'warn') { html = ''; kind = 'ok'; }   // 憑證沒有「合計列」很正常，別顯示「尚未驗算」
+    if (!v.failed.length) {
+      html += `<div${html ? ' class="chip-note" style="margin-top:4px"' : ''}>✅ <strong>憑證驗算</strong>：`
+        + `${names.map(escapeHtml).join('、')}，${v.checked} 項全部相符。</div>`;
+    } else {
+      kind = 'err';
+      html += `<div style="margin-top:6px"><strong>❌ 憑證驗算：${v.failed.length}/${v.checked} 項不符</strong></div>`
+        + '<ul class="smart-actions">' + v.failed.slice(0, 6).map(x =>
+          `<li>${escapeHtml(x.text)}：第 ${x.r + 1} 列／第 ${x.c + 1} 欄寫 ${fmtNum(x.actual)}，應為 ${fmtNum(x.expected)}`
+          + ` <button class="btn btn-ghost btn-sm" onclick="jumpToCell(${x.r}, ${x.c})">跳到這格</button></li>`).join('') + '</ul>'
+        + (v.failed.length > 6 ? `<div class="chip-note">…另有 ${v.failed.length - 6} 項</div>` : '');
     }
   }
   // 乘法關係的結果：加總相符不代表每個被加數都對，所以這一塊單獨講
@@ -3174,10 +3210,12 @@ function restoreBatchResult(result) {
 
 function batchStatusOf() {
   if (typeof smartInfo === 'undefined' || !smartInfo) return 'pending';
-  const bad = (smartInfo.unconfirmed || []).length + (smartMultiply && smartMultiply.failed ? smartMultiply.failed.length : 0);
+  const bad = (smartInfo.unconfirmed || []).length + (smartMultiply && smartMultiply.failed ? smartMultiply.failed.length : 0)
+    + (smartVoucher ? smartVoucher.failed.length : 0);
   const badNum = (smartUnparsed || []).length;
   if (bad) return 'bad';
   if (smartInfo.totalRows && smartInfo.totalRows.length) return 'ok';
+  if (smartVoucher && smartVoucher.checked) return 'ok';
   return 'warn';
 }
 
@@ -3195,10 +3233,11 @@ function currentTableStats() {
   (smartMultiply && smartMultiply.failed ? smartMultiply.failed : []).forEach(f => {
     if (Number.isFinite(f.expected)) diff += Math.abs(f.actual - f.expected);
   });
+  (smartVoucher ? smartVoucher.failed : []).forEach(x => { diff += Math.abs(x.actual - x.expected); });
   return {
     rows: tableData.length,
     cols: tableData.length ? Math.max(...tableData.map(r => r.length)) : 0,
-    totals, bad, mul, diff,
+    totals, bad: bad + (smartVoucher ? smartVoucher.failed.length : 0), mul, diff,
     low: lowConfidenceCount(),
     unver: (smartInfo && smartInfo.unverifiable) ? smartInfo.unverifiable.length : 0,
     badNum: (smartUnparsed || []).length,
@@ -3463,6 +3502,8 @@ function reviewQueue() {
     smartInfo.unconfirmed.forEach(x => push(x.r, x.c, 'total',
       `合計不符：試算 ${x.candidates.slice(0, 2).map(fmtNum).join(' / ')}，實際 ${fmtNum(x.actual)}`));
   }
+  (smartVoucher ? smartVoucher.failed : []).forEach(x => push(x.r, x.c, 'total',
+    `${x.text}：應為 ${fmtNum(x.expected)}，實際 ${fmtNum(x.actual)}`));
   (smartUnparsed || []).forEach(x => push(x.r, x.c, 'badnum',
     `「${x.text}」不像數字，已被排除在驗算外`));
   lowConfidenceCells().forEach(x => push(x.r, x.c, 'low',

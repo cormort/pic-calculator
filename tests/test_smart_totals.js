@@ -295,4 +295,80 @@ assert.strictEqual(SmartTotals.isTotalLabel("本期短絀"), true);
   assert.deepStrictEqual(SmartTotals.pageStreams(done, opts), [[0], [1]]);
 }
 
+// ---- 核銷憑證 ----
+{
+  const V = (t) => SmartTotals.voucherChecks(t, { parse: parseNum });
+  const kinds = (r) => r.checks.map((c) => c.kind + (c.ok ? "" : "!")).join(",");
+  assert.strictEqual(SmartTotals.chineseAmount("壹萬貳仟參佰"), 12300);
+  assert.strictEqual(SmartTotals.chineseAmount("零仟零佰壹拾貳萬參仟肆佰伍拾陸"), 123456);
+  assert.strictEqual(SmartTotals.chineseAmount("拾"), 10);
+  assert.ok(isNaN(SmartTotals.chineseAmount("主持人")));
+
+  // 三聯式發票：合計 + 營業稅 = 總計、稅額 5%、大寫
+  const inv = [["品名", "數量", "單價", "金額"], ["碳粉匣", "2", "5,000", "10,000"],
+    ["合計", "", "", "10,000"], ["營業稅", "", "", "500"], ["總計", "", "", "10,500"],
+    ["總計新臺幣", "壹萬零伍佰", "元整", ""]];
+  assert.strictEqual(kinds(V(inv)), "tax-sum,tax-rate,capital");
+  const bad = inv.map((r) => r.slice());
+  bad[3][3] = "600";   // 稅額寫錯：總計對不上、稅率也不對
+  assert.strictEqual(kinds(V(bad)), "tax-sum!,tax-rate!,capital");
+  assert.strictEqual(V(bad).failed[1].expected, 500);
+  const capBad = inv.map((r) => r.slice());
+  capBad[5][1] = "壹萬伍佰伍拾";
+  assert.strictEqual(kinds(V(capBad)), "tax-sum,tax-rate,capital!");
+  // 免稅：稅額 0 不驗稅率
+  assert.strictEqual(kinds(V([["銷售額", "800"], ["營業稅", "0"], ["總計", "800"]])), "tax-sum");
+
+  // 領據（一格一格）與印領清冊（一欄一欄）
+  assert.strictEqual(kinds(V([["應領金額", "10,000"], ["代扣所得稅", "1,000"], ["補充保費", "211"], ["實領金額", "8,789"],
+    ["新臺幣", "捌仟柒佰捌拾玖元整"]])), "net,capital");
+  const roll = [["姓名", "應領金額", "代扣所得稅", "補充保費", "實領金額"],
+    ["王小明", "10,000", "1,000", "211", "8,789"], ["李大華", "5,000", "0", "0", "4,000"]];
+  assert.strictEqual(kinds(V(roll)), "net,net!");
+  assert.deepStrictEqual([V(roll).failed[0].r, V(roll).failed[0].c, V(roll).failed[0].expected], [2, 4, 5000]);
+
+  // 分批付款表：已付含不含本次都接受；外幣折合
+  assert.strictEqual(kinds(V([["應付總額", "100,000"], ["已付金額", "30,000"], ["本次付款金額", "20,000"], ["未付金額", "50,000"]])), "installment");
+  assert.strictEqual(kinds(V([["應付總額", "100,000"], ["已付金額", "50,000"], ["未付金額", "50,000"]])), "installment");
+  assert.strictEqual(kinds(V([["應付總額", "100,000"], ["已付金額", "30,000"], ["未付金額", "60,000"]])), "installment!");
+  assert.strictEqual(kinds(V([["外幣金額", "100"], ["折合率", "32.15"], ["折合新臺幣", "3,215"]])), "fx");
+
+  // 出差旅費報告表：每列各項費用加總 = 總計；單據號數不能被加進去
+  const trip = [["月", "日", "起訖地點", "交通費", "", "住宿費", "雜費", "總計", "單據號數"],
+    ["", "", "", "飛機高鐵", "汽車捷運", "", "", "", ""],
+    ["3", "1", "臺北-高雄", "1,490", "60", "2,000", "400", "3,950", "12"],
+    ["3", "2", "高雄", "", "80", "2,000", "400", "2,480", "13"],
+    ["3", "3", "高雄-臺北", "1,490", "60", "", "200", "1,850", "14"]];
+  assert.strictEqual(kinds(V(trip)), "row-sum,row-sum,row-sum!");
+  assert.strictEqual(V(trip).failed[0].expected, 1750);
+
+  // ---- 以下照臺大主計室實際表單的欄位（領款收據、分批付款表、分攤表、國內外旅費報告表） ----
+  // 領款收據：應領金額只寫大寫（預印「拾 萬 仟 佰 拾 元整」填空）、扣繳稅額：$、扣繳健保費$、實領金額：$
+  const ntu = [["應領金額", "新臺幣(大寫) 拾 壹萬 仟 佰 拾 元整"],
+    ["扣繳稅額：$1,000", "扣繳健保費$211", "實領金額：$8,789"]];
+  assert.strictEqual(kinds(V(ntu)), "net");
+  ntu[1][2] = "實領金額：$8,800";
+  assert.strictEqual(kinds(V(ntu)), "net!");
+  assert.strictEqual(V(ntu).failed[0].expected, 8789);
+  // 分批（期）付款表
+  const inst = [["應付總額", "100,000"], ["截至上次已付金額", "30,000"], ["本次付款金額", "20,000"],
+    ["已付金額", "50,000"], ["未付金額", "50,000"]];
+  assert.strictEqual(kinds(V(inst)), "installment-paid,installment");
+  inst[3][1] = "60,000";
+  assert.strictEqual(kinds(V(inst)), "installment-paid!,installment!");
+  // 支出科目分攤表：總金額 = 合計
+  assert.strictEqual(kinds(V([["總金額：90,000", "", ""], ["科目", "金額", "說明"], ["業務費", "60,000", ""],
+    ["旅運費", "30,000", ""], ["合計", "90,000", ""]])), "share");
+  assert.strictEqual(kinds(V([["總金額：90,000", ""], ["甲機關", "60,000"], ["乙機關", "20,000"], ["合計", "80,000"]])), "share!");
+  // 國內出差旅費報告表（直式）：月、日、單據號數不能加進總計
+  const ntuTrip = [["月", "", "3", "3"], ["日", "", "1", "2"], ["起訖地點", "", "臺北-高雄", "高雄-臺北"],
+    ["交通費", "飛機及高鐵", "1,490", "1,490"], ["", "汽車及捷運", "60", "80"], ["住宿費", "", "2,000", ""],
+    ["雜費", "", "400", "400"], ["單據號數", "", "12", "13"], ["總計", "", "3,950", "2,000"]];
+  assert.strictEqual(kinds(V(ntuTrip)), "col-sum,col-sum!");
+  assert.deepStrictEqual([V(ntuTrip).failed[0].expected, V(ntuTrip).ownRows], [1970, [8]]);
+
+  // 一般表格（沒有憑證標籤）不出聲
+  assert.strictEqual(V(table).checked, 0);
+}
+
 console.log("PASS  smart totals：16 格自動比對、錯誤偵測、負數、標籤判斷、乘法關係（單價×數量）");
