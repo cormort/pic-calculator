@@ -480,9 +480,48 @@
     const sales = find(/^(銷售額合計|銷售額|未稅金額|未稅|合計|小計)/);
     const tax = find(/^(營業稅額|營業稅|稅額|稅金)/);
     const total = find(/^(總計|含稅總計|含稅金額|總額|應付總額)/);
+    let invTotal = total;   // 大寫金額要比的總計
     if (sales && tax && total && sales.r !== total.r) {
       add("tax-sum", total, sales.v + tax.v, "銷售額 + 營業稅 = 總計");
       if (tax.v > 0) add("tax-rate", tax, Math.round(sales.v * 0.05), "營業稅 = 銷售額 × 5%");
+    } else {
+      // 拍照的三聯式發票：標籤是「銷 售 額 合 計」「總　　計」這種拉開的字，OCR 常只剩「售｜合｜計」
+      // 「德｜計」，或整列黏成一格（「營業稅4零稅率免稅 27」，勾選的 ✓ 被讀成 4）。
+      // 「營業稅」三個字最常讀得出來（實測 9 張範例圖：3 張三聯式都讀到，其中一張是「營案稅」），
+      // 所以拿它當錨：稅額那一列的上一個有數字的列是銷售額、下一個是總計。
+      // 每列可能有好幾個數字（雜訊），挑「銷售額 + 稅 = 總計」成立的那一組；
+      // 沒有任何一組成立時，只有三列都剛好一個數字（沒得挑）才報不符，否則不下結論
+      const tokens = (r) => {
+        const out = [];
+        (table[r] || []).forEach((cell, c) => {
+          for (const m of String(cell ?? "").matchAll(/\d[\d,]*(?:\.\d+)?/g)) {
+            const v = parseFloat(m[0].replace(/,/g, ""));
+            if (Number.isFinite(v)) out.push({ r, c, v });
+          }
+        });
+        return out;
+      };
+      const rowText = (r) => (table[r] || []).map(clean).join("");
+      const tr = table.findIndex((row, r) => /營.稅/.test(rowText(r)) && tokens(r).length);
+      if (tr > 0) {
+        let sr = -1, cr = -1;
+        for (let r = tr - 1; r >= Math.max(0, tr - 3) && sr < 0; r--) if (tokens(r).length) sr = r;
+        for (let r = tr + 1; r <= Math.min(table.length - 1, tr + 3) && cr < 0; r++) if (tokens(r).length) cr = r;
+        if (sr >= 0 && cr >= 0) {
+          const S = tokens(sr), T = tokens(tr), C = tokens(cr);
+          let pick = null;
+          for (const a of S) for (const b of T) for (const c of C) {
+            if (!pick && a.v > 0 && Math.abs(a.v + b.v - c.v) <= 1 && Math.abs(b.v - Math.round(a.v * 0.05)) <= 1) pick = [a, b, c];
+          }
+          if (!pick && S.length === 1 && T.length === 1 && C.length === 1) pick = [S[0], T[0], C[0]];
+          if (pick) {
+            const [a, b, c] = pick;
+            add("tax-sum", c, a.v + b.v, "銷售額 + 營業稅 = 總計");
+            if (b.v > 0) add("tax-rate", b, Math.round(a.v * 0.05), "營業稅 = 銷售額 × 5%");
+            invTotal = c;
+          }
+        }
+      }
     }
 
     // 大寫金額先找出來：整列的字接起來找（常被切成好幾格）。
@@ -494,7 +533,13 @@
       const m = capRe.exec(text);
       if (!m) continue;
       const vals = [chineseAmount(m[0].replace(/^[拾佰仟萬億十百千]+/, "")), chineseAmount(m[0])].filter((v) => !isNaN(v));
-      if (vals.length) capital = { r, vals, gross: /應領|應發|支領/.test(text) };
+      // fuzzy：大寫那一段夾著認不得的字（「管佰麗零伍佰零零元」「萬千抄百拾元」）＝ OCR 沒讀乾淨。
+      // 實測 9 張範例發票圖，大寫有 2 張讀成這樣，照著解析會得到 500、100 而誤報，
+      // 所以讀不乾淨時只認「相符」，對不上不下結論
+      const zone = text.slice(text.search(new RegExp(`[${CN_CHARS}]`)), m.index + m[0].length)
+        .replace(/新臺幣|新台幣|大寫|中文|總計|合計/g, "");
+      const fuzzy = new RegExp(`[^${CN_CHARS}]`).test(zone);
+      if (vals.length) capital = { r, vals, fuzzy, gross: /應領|應發|支領/.test(text) };
     }
 
     // 實領（一格一格）
@@ -607,10 +652,10 @@
         const v = parse(table[r][c]);
         if (!isNaN(v)) same = { r, c, v };
       }
-      const cands = [same, total, gross, net,
+      const cands = [same, invTotal, gross, net,
         find(/^(實收數額|實收金額|實領|實付|合計|總額|金額合計|核銷金額)/)].filter(Boolean);
       const match = (x) => capital.vals.find((v) => Math.abs(x.v - v) <= 1);
-      const hit = cands.find((x) => match(x) !== undefined) || cands[0];
+      const hit = cands.find((x) => match(x) !== undefined) || (capital.fuzzy ? null : cands[0]);
       if (hit) add("capital", hit, match(hit) ?? capital.vals[0], "大寫金額 = 數字金額");
     }
     return { checks, failed: checks.filter((x) => !x.ok), checked: checks.length, ownRows };

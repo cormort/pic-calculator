@@ -367,6 +367,24 @@ assert.strictEqual(SmartTotals.isTotalLabel("本期短絀"), true);
   assert.strictEqual(kinds(V(ntuTrip)), "col-sum,col-sum!");
   assert.deepStrictEqual([V(ntuTrip).failed[0].expected, V(ntuTrip).ownRows], [1970, [8]]);
 
+  // ---- 以下是範例發票圖實際 OCR 出來的表（低解析度，標籤殘缺） ----
+  // 三聯式：「銷 售 額 合 計」只剩「售｜合｜計」、「總計」只剩「計」
+  assert.strictEqual(kinds(V([["品", "", "1", "0", "10,000", ""], ["售", "", "合", "計", "10,000", ""],
+    ["營業稅", "", "惠稅零稅率免稅", "", "500", ""], ["", "", "計", "", "10,500", ""]])), "tax-sum,tax-rate");
+  // 手寫三聯式：「營案稅」、金額前面有 NT／VT
+  assert.strictEqual(kinds(V([["銷售額合計", "", "NT 5600", "統一腐號"], ["營案稅", "應稅零稅率免稅", "280", ""],
+    ["德", "計", "VT 5880", ""]])), "tax-sum,tax-rate");
+  // 整列黏成一格，勾選的 ✓ 被讀成 4、旁邊還有別的數字；大寫前面的單位沒填
+  const glued = [["", "銷售額合計 530", "1統一編巰"], ["", "營業稅4零稅率免稅 27", ""], ["", "總 ⑤557", ""],
+    ["", "德仟佰格萬仟伍佰伍拾柒元", ""]];
+  assert.strictEqual(kinds(V(glued)), "tax-sum,tax-rate,capital");
+  // 大寫被 OCR 讀成亂碼（夾著認不得的字）：對不上也不報錯
+  assert.strictEqual(kinds(V([["售合計", "10,000"], ["營業稅", "500"], ["計", "10,500"], ["管佰麗零伍佰零零元", ""]])), "tax-sum,tax-rate");
+
+  // 三列都只有一個數字又對不上 → 報不符；有雜訊數字可挑卻挑不出成立的組合 → 不下結論
+  assert.strictEqual(kinds(V([["售合計", "10,000"], ["營業稅", "500"], ["計", "10,600"]])), "tax-sum!,tax-rate");
+  assert.strictEqual(V([["銷售額合計 530", "1統一編巰"], ["營業稅4零稅率免稅 27", ""], ["總 ⑤567", ""]]).checked, 0);
+
   // 一般表格（沒有憑證標籤）不出聲
   assert.strictEqual(V(table).checked, 0);
 }
