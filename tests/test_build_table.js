@@ -8,19 +8,20 @@ const path = require("path");
 
 const html = fs.readFileSync(
   path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
-const buildSrc = html.match(/function buildTable\(words, grid\) \{[\s\S]*?\n    \}/)[0];
+const buildSrc = html.match(/function buildTable\(words, grid\) \{[\s\S]*?\n\}\n\nasync function analyzeImage/)[0]
+  .replace(/\n\nasync function analyzeImage$/, "");
 // 欄／列的驗算角色（加項／減項／合計）是純邏輯，直接抽出來測
 const selSrc = [
   html.match(/const sel = \{[\s\S]*?let selMode = 1;/)[0],
   ...["autoTotalIndex", "setRole", "removeSel", "addRange", "selCount", "selIndices", "selSigns"]
-    .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0]),
+    .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0]),
 ].join("\n");
 
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
 // 用 index.html 裡真正的數字解析，避免測試與實作各寫一份
 const numSrc = html.match(/  _num\(v\) \{[\s\S]*?\n  \},/)[0];
 // _num 會用到全形轉換與千分位修正，helper 一起抽出來（同一個 eval 才看得到彼此）
-const helperSrc = html.match(/const FULLWIDTH_MAP[\s\S]*?\n    function repairNumericCells[\s\S]*?\n    \}\n/)[0];
+const helperSrc = html.match(/const FULLWIDTH_MAP[\s\S]*?\nfunction repairNumericCells[\s\S]*?\n\}\n/)[0];
 const helpers = eval(helperSrc + "\n;({ Validator: ({" + numSrc + "}), repairNumericCells })");
 const Validator = helpers.Validator;
 const repairCells = helpers.repairNumericCells;  // eval 會把同名 function 留在作用域，換個名字
@@ -61,8 +62,8 @@ assert.strictEqual(Validator._num("100USD"), 100);
 assert.strictEqual(repairCells([["金額"], ["2OO"], ["1,000"]], null).data[1][0], "200");
 
 // buildTable 會用到字寬估算與「跨格線拆框」
-eval(html.match(/function charWidth\(ch\) \{[\s\S]*?\n    \}\n/)[0]);
-eval(html.match(/function splitBoxAtLine\(w, vLines\) \{[\s\S]*?\n    \}\n/)[0]);
+eval(html.match(/function charWidth\(ch\) \{[\s\S]*?\n\}\n/)[0]);
+eval(html.match(/function splitBoxAtLine\(w, vLines\) \{[\s\S]*?\n\}\n/)[0]);
 
 eval(buildSrc);   // 選取角色（selSrc）留到最後再 eval，避免蓋掉測試自己的變數
 

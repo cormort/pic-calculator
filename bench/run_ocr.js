@@ -49,10 +49,10 @@ const OUT = path.join(ROOT, arg("out", "out/run.json"));
       const ws = document.getElementById("workspace");
       if (ws) ws.style.display = "none";
     });
-    const prevLen = await page.evaluate(() => (document.getElementById("preview-img").src || "").length);
+    const prevSrc = await page.evaluate(() => document.getElementById("preview-img").src || "");
     await page.setInputFiles("#file-input", path.join(SHOTS, name));
     await page.waitForFunction(
-      (n) => (document.getElementById("preview-img").src || "").length !== n, prevLen, { timeout: 60000 });
+      (prev) => (document.getElementById("preview-img").src || "") !== prev, prevSrc, { timeout: 60000 });
     await page.waitForTimeout(500);
     // 直接呼叫 analyzeImage()：按鈕在「自動辨識已經跑起來」時是 disabled，用點擊會卡住
     const prev = await page.evaluate(() => (document.getElementById("summary") || {}).innerText || "");

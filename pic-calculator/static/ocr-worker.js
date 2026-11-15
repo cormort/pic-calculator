@@ -992,9 +992,10 @@ function nms1D(items, startKey, endKey, iouThresh = 0.5) {
 }
 
 async function tatrTable(canvas, words) {
+  // 先講再載：第一次要從 CDN 下載模型，不講的話畫面會停在「辨識中」很久
+  postStatus('沒有明顯格線，改用財報表格結構模型 (TATR)…');
   const sess = await getTatrSession();
   if (!sess) return null;
-  postStatus('沒有明顯格線，改用財報表格結構模型 (TATR)…');
 
   const maxSide = 1000;
   const ratio = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
@@ -1144,7 +1145,9 @@ async function tatrTable(canvas, words) {
 }
 
 async function structureTable(canvas, words) {
-  const tatr = await tatrTable(canvas, words);
+  // TATR 推論失敗（記憶體不足、不支援的運算）不能把整個結構模式拖垮：照樣退回 SLANet
+  let tatr = null;
+  try { tatr = await tatrTable(canvas, words); } catch (err) { /* 退回 SLANet */ }
   if (tatr) return tatr;
   const sess = await getStructureSession();
   if (!sess) return null;
@@ -1282,12 +1285,12 @@ async function handleMessage(event) {
       previewScale = pw / rectRef.width;   // 原圖 px → 縮圖 px
     } catch (err) { preview = null; }
     // 內部格線太少＝沒有欄界可用 → 交給表格結構模型決定格子（用已映射好的字框）
-    let structure = null;
+    let structure = null, structErr = null;
     const weakGrid = (grid?.v?.length || 0) < 3 || (grid?.h?.length || 0) < 3;
     if (weakGrid) {
-      try { structure = await structureTable(canvas, results); } catch (err) { self.__structErr = String(err?.message || err); }
+      try { structure = await structureTable(canvas, results); } catch (err) { structErr = String(err?.message || err); }
     }
-    self.postMessage({ type: 'result', id, confidence, results, grid, structure, structErr: self.__structErr || null, preview, previewScale,
+    self.postMessage({ type: 'result', id, confidence, results, grid, structure, structErr, preview, previewScale,
       normalized: ocrNormalized, backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });
