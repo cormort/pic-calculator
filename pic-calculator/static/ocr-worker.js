@@ -1144,11 +1144,7 @@ async function tatrTable(canvas, words) {
   return { grid, conf, boxes, spans, cells: grid.length * keepCols, rows: grid.length, cols: keepCols };
 }
 
-async function structureTable(canvas, words) {
-  // TATR 推論失敗（記憶體不足、不支援的運算）不能把整個結構模式拖垮：照樣退回 SLANet
-  let tatr = null;
-  try { tatr = await tatrTable(canvas, words); } catch (err) { /* 退回 SLANet */ }
-  if (tatr) return tatr;
+async function slanetTable(canvas, words) {
   const sess = await getStructureSession();
   if (!sess) return null;
   postStatus('沒有明顯格線，改用表格結構模型…');
@@ -1159,6 +1155,19 @@ async function structureTable(canvas, words) {
   if (!loc || !probs) return null;
   const rows = structureRows(loc, probs, canvas.width, canvas.height);
   return rowsToTable(rows, words);
+}
+
+// SLANet 優先、TATR 備援。實測 bench/probe/g-borderless.png（標準模型）：
+// SLANet 數字格 84.6%；TATR 多切一個空欄、數字整排右移，數字格 0%。
+// 任一個失敗（載不到、推論丟例外、給不出格子）就試下一個，不讓它把結構模式整個拖垮
+async function structureTable(canvas, words) {
+  for (const model of [slanetTable, tatrTable]) {
+    try {
+      const table = await model(canvas, words);
+      if (table) return table;
+    } catch (err) { /* 試下一個 */ }
+  }
+  return null;
 }
 
 /* =============================================================
