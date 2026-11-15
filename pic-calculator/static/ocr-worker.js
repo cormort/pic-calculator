@@ -111,15 +111,13 @@ async function createLayoutSession(eps) {
 
 async function getLayoutSession() {
   if (layoutSession) return layoutSession;
-  const eps = await getDefaultWebExecutionProviders();   // WebGPU 可用時為 ['webgpu','wasm']
-  try {
-    layoutSession = await createLayoutSession(eps);
-    layoutEps = eps;
-  } catch (err) {
-    postStatus('WebGPU 不支援版面模型，改用 WASM…');
-    layoutSession = await createLayoutSession(['wasm']);
-    layoutEps = ['wasm'];
+  if (!ort.env.wasm.wasmPaths) {
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/';
   }
+  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.proxy = false;
+  layoutSession = await createLayoutSession(['wasm']);
+  layoutEps = ['wasm'];
   return layoutSession;
 }
 
@@ -131,7 +129,7 @@ async function runLayout(makeInputs) {
     if (!layoutEps || !layoutEps.includes('webgpu')) throw err;
     // layout 模型在部分 WebGPU 後端會因 MatMul 不支援而失敗，退回 WASM 重跑一次
     postStatus('WebGPU 執行版面模型失敗，改用 WASM…');
-    try { await layoutSession.release?.(); } catch (releaseErr) { /* 忽略 */ }
+    try { layoutSession.release?.()?.catch?.(() => {}); } catch (releaseErr) { /* 忽略 */ }
     layoutSession = await createLayoutSession(['wasm']);
     layoutEps = ['wasm'];
     return await layoutSession.run(makeInputs());
@@ -960,7 +958,194 @@ function rowsToTable(rows, words) {
   return { grid, conf, boxes, spans, cells: cells.length, rows: grid.length, cols: ncol };
 }
 
+const TATR_MODEL = 'https://huggingface.co/Xenova/table-transformer-structure-recognition-v1.1-fin/resolve/main/onnx/model_quantized.onnx';
+let tatrSession = null, tatrUnavailable = false;
+
+async function getTatrSession() {
+  if (tatrSession) return tatrSession;
+  if (tatrUnavailable) return null;
+  try {
+    tatrSession = await ort.InferenceSession.create(TATR_MODEL, {
+      executionProviders: ['wasm'],
+      logSeverityLevel: 3,
+    });
+  } catch (err) {
+    tatrUnavailable = true;
+    return null;
+  }
+  return tatrSession;
+}
+
+function nms1D(items, startKey, endKey, iouThresh = 0.5) {
+  const sorted = [...items].sort((a, b) => b.score - a.score);
+  const kept = [];
+  for (const item of sorted) {
+    const lenA = Math.max(1, item[endKey] - item[startKey]);
+    const overlap = kept.some((k) => {
+      const inter = Math.max(0, Math.min(item[endKey], k[endKey]) - Math.max(item[startKey], k[startKey]));
+      const lenB = Math.max(1, k[endKey] - k[startKey]);
+      return inter / (lenA + lenB - inter) > iouThresh;
+    });
+    if (!overlap) kept.push(item);
+  }
+  return kept.sort((a, b) => a[startKey] - b[startKey]);
+}
+
+async function tatrTable(canvas, words) {
+  const sess = await getTatrSession();
+  if (!sess) return null;
+  postStatus('沒有明顯格線，改用財報表格結構模型 (TATR)…');
+
+  const maxSide = 1000;
+  const ratio = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
+  const w = Math.max(1, Math.round(canvas.width * ratio));
+  const h = Math.max(1, Math.round(canvas.height * ratio));
+  const scaled = new OffscreenCanvas(w, h);
+  const g = scaled.getContext('2d', { willReadFrequently: true });
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(canvas, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data;
+
+  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+  const data = new Float32Array(3 * h * w);
+  for (let i = 0; i < w * h; i++) {
+    for (let ch = 0; ch < 3; ch++) {
+      data[ch * w * h + i] = (px[i * 4 + ch] / 255 - mean[ch]) / std[ch];
+    }
+  }
+  const feeds = { pixel_values: new ort.Tensor('float32', data, [1, 3, h, w]) };
+  if (sess.inputNames.includes('pixel_mask')) {
+    const mask = new BigInt64Array(h * w).fill(1n);
+    feeds.pixel_mask = new ort.Tensor('int64', mask, [1, h, w]);
+  }
+
+  const out = await sess.run(feeds);
+  const logits = out.logits || Object.values(out).find((t) => t.dims.length === 3 && t.dims[2] === 7);
+  const predBoxes = out.pred_boxes || Object.values(out).find((t) => t.dims.length === 3 && t.dims[2] === 4);
+  if (!logits || !predBoxes) return null;
+
+  const Q = logits.dims[1], C = logits.dims[2];
+  const rawCols = [], rawRows = [], rawSpans = [];
+  for (let q = 0; q < Q; q++) {
+    const base = q * C;
+    let maxL = -Infinity;
+    for (let c = 0; c < C; c++) if (logits.data[base + c] > maxL) maxL = logits.data[base + c];
+    let sumExp = 0;
+    const probs = new Float32Array(C);
+    for (let c = 0; c < C; c++) { probs[c] = Math.exp(logits.data[base + c] - maxL); sumExp += probs[c]; }
+    let bestC = 0, bestP = 0;
+    for (let c = 0; c < C; c++) {
+      const p = probs[c] / sumExp;
+      if (p > bestP) { bestP = p; bestC = c; }
+    }
+    if (bestC === 6) continue; // no-object
+    const [cx, cy, bw, bh] = predBoxes.data.subarray(q * 4, q * 4 + 4);
+    const box = {
+      x1: Math.max(0, cx - bw / 2) * canvas.width,
+      y1: Math.max(0, cy - bh / 2) * canvas.height,
+      x2: Math.min(1, cx + bw / 2) * canvas.width,
+      y2: Math.min(1, cy + bh / 2) * canvas.height,
+      score: bestP,
+    };
+    if (bestC === 1 && bestP >= 0.5) rawCols.push(box);
+    else if (bestC === 2 && bestP >= 0.5) rawRows.push(box);
+    else if (bestC === 5 && bestP >= 0.6) rawSpans.push(box);
+  }
+
+  const cols = nms1D(rawCols, 'x1', 'x2', 0.45);
+  const rows = nms1D(rawRows, 'y1', 'y2', 0.45);
+  if (rows.length < 2 || cols.length < 2) return null;
+
+  const nrow = rows.length, ncol = cols.length;
+  const grid = Array.from({ length: nrow }, () => new Array(ncol).fill(''));
+  const conf = Array.from({ length: nrow }, () => new Array(ncol).fill(1));
+  const boxes = Array.from({ length: nrow }, (_, r) =>
+    Array.from({ length: ncol }, (__, c) => ({ x1: cols[c].x1, y1: rows[r].y1, x2: cols[c].x2, y2: rows[r].y2 }))
+  );
+  const spans = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
+  const owner = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
+
+  for (const sp of rawSpans) {
+    const rIdx = [], cIdx = [];
+    rows.forEach((row, r) => {
+      const ry = (row.y1 + row.y2) / 2;
+      if (ry >= sp.y1 && ry <= sp.y2) rIdx.push(r);
+    });
+    cols.forEach((col, c) => {
+      const cx = (col.x1 + col.x2) / 2;
+      if (cx >= sp.x1 && cx <= sp.x2) cIdx.push(c);
+    });
+    if (rIdx.length && cIdx.length && (rIdx.length > 1 || cIdx.length > 1)) {
+      const r0 = rIdx[0], c0 = cIdx[0];
+      spans[r0][c0] = { rs: rIdx.length, cs: cIdx.length };
+      for (const r of rIdx) for (const c of cIdx) owner[r][c] = [r0, c0];
+    }
+  }
+  for (let r = 0; r < nrow; r++) {
+    for (let c = 0; c < ncol; c++) {
+      if (!owner[r][c]) spans[r][c] = { rs: 1, cs: 1 };
+    }
+  }
+
+  const findBestBand = (bands, startKey, endKey, pt) => {
+    let best = 0, bestDist = Infinity;
+    for (let i = 0; i < bands.length; i++) {
+      if (pt >= bands[i][startKey] && pt <= bands[i][endKey]) return i;
+      const mid = (bands[i][startKey] + bands[i][endKey]) / 2;
+      const d = Math.abs(pt - mid);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    return best;
+  };
+
+  for (const word of words) {
+    const r = findBestBand(rows, 'y1', 'y2', word.cy);
+    // 若單一字框橫跨多個 TATR 欄位且非合併儲存格，依空白拆詞並按比例分配到各欄
+    const hitCols = [];
+    for (let c = 0; c < ncol; c++) {
+      const ov = Math.min(word.x2, cols[c].x2) - Math.max(word.x1, cols[c].x1);
+      if (ov > Math.max(6, (word.h || 20) * 0.3)) hitCols.push(c);
+    }
+    const tokens = word.text.trim().split(/\s+/);
+    if (hitCols.length > 1 && tokens.length >= hitCols.length && !owner[r][hitCols[0]]) {
+      const totalChars = Math.max(1, word.text.length);
+      let cursor = 0;
+      for (const tok of tokens) {
+        const idx = word.text.indexOf(tok, cursor);
+        const midFrac = ((idx >= 0 ? idx : cursor) + tok.length / 2) / totalChars;
+        const tokCx = word.x1 + (word.x2 - word.x1) * midFrac;
+        cursor = (idx >= 0 ? idx : cursor) + tok.length;
+        let c = findBestBand(cols, 'x1', 'x2', tokCx);
+        let rr = r;
+        if (owner[rr][c]) [rr, c] = owner[rr][c];
+        grid[rr][c] = grid[rr][c] ? grid[rr][c] + ' ' + tok : tok;
+        conf[rr][c] = Math.min(conf[rr][c], Number.isFinite(word.score) ? word.score : 1);
+      }
+      continue;
+    }
+    let c = findBestBand(cols, 'x1', 'x2', word.cx);
+    let rr = r;
+    if (owner[rr][c]) [rr, c] = owner[rr][c];
+    grid[rr][c] = grid[rr][c] ? grid[rr][c] + ' ' + word.text : word.text;
+    conf[rr][c] = Math.min(conf[rr][c], Number.isFinite(word.score) ? word.score : 1);
+  }
+
+  const rowEmpty = (r) => grid[r].every((t) => !t);
+  const colEmpty = (c) => grid.every((row) => !row[c]);
+  while (grid.length > 1 && rowEmpty(0)) { grid.shift(); conf.shift(); boxes.shift(); spans.shift(); }
+  while (grid.length > 1 && rowEmpty(grid.length - 1)) { grid.pop(); conf.pop(); boxes.pop(); spans.pop(); }
+  let keepCols = ncol;
+  while (keepCols > 1 && colEmpty(keepCols - 1)) {
+    grid.forEach((r) => r.pop()); conf.forEach((r) => r.pop());
+    boxes.forEach((r) => r.pop()); spans.forEach((r) => r.pop());
+    keepCols--;
+  }
+  return { grid, conf, boxes, spans, cells: grid.length * keepCols, rows: grid.length, cols: keepCols };
+}
+
 async function structureTable(canvas, words) {
+  const tatr = await tatrTable(canvas, words);
+  if (tatr) return tatr;
   const sess = await getStructureSession();
   if (!sess) return null;
   postStatus('沒有明顯格線，改用表格結構模型…');
@@ -976,7 +1161,12 @@ async function structureTable(canvas, words) {
 /* =============================================================
    訊息處理
    ============================================================= */
-self.onmessage = async (event) => {
+let msgQueue = Promise.resolve();
+self.onmessage = (event) => {
+  msgQueue = msgQueue.then(() => handleMessage(event)).catch(() => {});
+};
+
+async function handleMessage(event) {
   const msg = event.data || {};
   const { id } = msg;
   try {
