@@ -50,24 +50,10 @@ async function ensureConverter() {
   }
 }
 
-function toHalfWidthNumeric(s) {
-  return s
-    .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-    .replace(/[－−—–]/g, '-')
-    .replace(/．/g, '.');
-}
-
-function repairNumericToken(s) {
-  // 僅在明顯為數字儲存格（含至少一位數字，且不含一般文字）時修正常見混淆字元
-  if (!/\d/.test(s) || !/^[\d.,\-+$%()OolI|〇\s]+$/.test(s)) return s;
-  return s
-    .replace(/[Oo〇]/g, '0')
-    .replace(/[lI|]/g, '1');
-}
-
 function cleanText(t) {
-  const s = repairNumericToken(toHalfWidthNumeric(toTraditional(t.trim())));
-  return s
+  // 全形數字、O→0、l→1 這類修正交給主畫面的 repairNumericCells：那邊會記下原辨識，
+  // 格子上才看得到「已自動整理：原辨識…」。在這裡先改掉，使用者就無從核對
+  return toTraditional(t.trim())
     .replace(/(?:線|綫|综|総)計$/, '總計')   // 模型常把「總計」讀成「線計」
     .replace(/(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef(（])\s+|\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef)）])/g, '');
 }
@@ -174,6 +160,9 @@ async function detectTable(bitmap) {
 
   // 框離圖片邊緣不到 4% 時直接貼齊邊緣：表格常一路延伸到照片邊上，
   // 模型的框會略為內縮，切掉最外側的字（實拍：9,900 被切成 9,90）
+  // ponytail: 外擴 1% 是試出來的。f-tilted 的歪斜表頭剛好落在框外（少一列），
+  // 但改成 2% 時 b-photo、e-balance-photo 反而各掉 4～7 個百分點（六張合計 數字 98.2→96.3%）。
+  // 六張樣本太少，別再憑這幾張調；有更多實拍樣本再一起量
   const pad = 0.01, f = (v) => { v = Math.min(1, Math.max(0, v)); return v < 0.04 ? 0 : v > 0.96 ? 1 : v; };
   const x1 = f(best.x1 / W - pad), y1 = f(best.y1 / H - pad);
   const x2 = f(best.x2 / W + pad), y2 = f(best.y2 / H + pad);
@@ -344,6 +333,7 @@ function rectifiedCanvas(bitmap, quad) {
       d[o + 3] = 255;
     }
   }
+  // 量測（2026-11-15，標準模型，bench 六張）：拿掉這一步 格 95.5→94.5%、數字 98.2→95.1%，所以保留
   normalizeAndSharpen(d, dw, dh);
   for (let i = 0, o = 0; i < outGray.length; i++, o += 4) {
     outGray[i] = d[o] * 0.299 + d[o + 1] * 0.587 + d[o + 2] * 0.114;
@@ -417,59 +407,6 @@ function normalizedGray(st, gray, W, H) {
     }
   }
   return out;
-}
-
-async function refineLowConfidenceBoxes(svc, canvas, rawResults) {
-  const candidates = rawResults
-    .filter((r) => {
-      const t = r.text.trim();
-      return t && r.confidence >= MIN_NUMERIC_CONFIDENCE && r.confidence < 0.8 && (/[\d]/.test(t) || /^[-.,]+$/.test(t));
-    })
-    .slice(0, 12);
-  if (!candidates.length) return;
-
-  for (const r of candidates) {
-    const { x, y, width: w, height: h } = r.box;
-    if (w < 4 || h < 4) continue;
-    const pad = Math.max(4, Math.round(Math.min(w, h) * 0.35));
-    const sx = Math.max(0, Math.floor(x - pad));
-    const sy = Math.max(0, Math.floor(y - pad));
-    const sw = Math.min(canvas.width - sx, Math.ceil(w + pad * 2));
-    const sh = Math.min(canvas.height - sy, Math.ceil(h + pad * 2));
-    if (sw < 6 || sh < 6) continue;
-
-    const crop = new OffscreenCanvas(sw * 2, sh * 2);
-    const cg = crop.getContext('2d', { willReadFrequently: true });
-    cg.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw * 2, sh * 2);
-    // 局部對比拉伸，強化模糊數字筆畫
-    const id = cg.getImageData(0, 0, crop.width, crop.height);
-    const d = id.data;
-    let lo = 255, hi = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const lum = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-      if (lum < lo) lo = lum;
-      if (lum > hi) hi = lum;
-    }
-    if (hi - lo > 20 && hi - lo < 220) {
-      const span = hi - lo;
-      for (let i = 0; i < d.length; i += 4) {
-        for (let ch = 0; ch < 3; ch++) {
-          const v = ((d[i + ch] - lo) * 255) / span;
-          d[i + ch] = v < 0 ? 0 : v > 255 ? 255 : v;
-        }
-      }
-      cg.putImageData(id, 0, 0);
-    }
-
-    try {
-      const sub = await svc.recognize(crop, { flatten: true, minimumConfidence: 0, strategy: 'per-box' });
-      const best = sub.results?.filter((sr) => sr.text.trim()).sort((a, b) => b.confidence - a.confidence)[0];
-      if (best && best.confidence > r.confidence) {
-        r.text = best.text;
-        r.confidence = best.confidence;
-      }
-    } catch (err) { /* 局部重辨識失敗則保留原結果 */ }
-  }
 }
 
 /* =============================================================
@@ -958,7 +895,7 @@ function rowsToTable(rows, words) {
   return { grid, conf, boxes, spans, cells: cells.length, rows: grid.length, cols: ncol };
 }
 
-const TATR_MODEL = 'https://huggingface.co/Xenova/table-transformer-structure-recognition-v1.1-fin/resolve/main/onnx/model_quantized.onnx';
+const TATR_MODEL = 'https://huggingface.co/Xenova/table-transformer-structure-recognition-v1.1-fin/resolve/e9c9948662f4021563cefca1c183f246ad472c79/onnx/model_quantized.onnx';
 let tatrSession = null, tatrUnavailable = false;
 
 async function getTatrSession() {
