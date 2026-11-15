@@ -99,7 +99,13 @@
   }
 
   #camera-section { display: none; margin-top: 16px; }
-  #video { width: 100%; max-height: 280px; border-radius: 10px; border: 1px solid var(--border); background: #000; }
+  .video-wrap { position: relative; display: inline-block; width: 100%; }
+  #video { width: 100%; max-height: 280px; border-radius: 10px; border: 1px solid var(--border); background: #000; display: block; }
+  .camera-guide {
+    position: absolute; inset: 10% 8%; pointer-events: none;
+    border: 2px dashed rgba(255,255,255,.55); border-radius: 8px;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,.18);
+  }
 
   .spinner-wrap { display: none; flex-direction: column; align-items: center; gap: 12px; padding: 32px; }
   .spinner {
@@ -379,7 +385,10 @@
       <select id="camera-device" onchange="onCameraDeviceChange(this.value)"></select>
       <span class="note" id="camera-info"></span>
     </div>
-    <video id="video" autoplay playsinline></video>
+    <div class="video-wrap" style="overflow:hidden;border-radius:10px;">
+      <video id="video" autoplay playsinline></video>
+      <div class="camera-guide" aria-hidden="true"></div>
+    </div>
     <div class="btn-row" style="margin-top:12px;">
       <button class="btn" onclick="capturePhoto()">📸 拍照</button>
       <button class="btn btn-outline" onclick="stopCamera()">✕ 關閉相機</button>
@@ -401,6 +410,7 @@
       <button class="btn btn-ghost btn-sm" onclick="rotateImage(-1)">⟲ 左轉 90°</button>
       <button class="btn btn-ghost btn-sm" onclick="rotateImage(1)">⟳ 右轉 90°</button>
       <button class="btn btn-ghost btn-sm" onclick="setQuad(FULL_QUAD)">↺ 框選整張圖</button>
+      <button class="btn btn-ghost btn-sm" onclick="rotateImage(90)">↻ 旋轉 90°</button>
     </div>
     <div class="quality-row">
       <label for="ocr-quality">辨識精度</label>
@@ -1287,7 +1297,36 @@ function canvasToImageFile(canvas, name = `capture-${Date.now()}`) {
   });
 }
 
+async function rotateImage(deg) {
+  if (!currentFile) return;
+  const img = document.getElementById('preview-img');
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) return;
+  const rad = ((deg % 360) + 360) % 360;
+  const swap = rad === 90 || rad === 270;
+  const scale = Math.min(1, 4096 / Math.max(w, h));
+  const cw = Math.round((swap ? h : w) * scale);
+  const ch = Math.round((swap ? w : h) * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext('2d');
+  ctx.translate(cw / 2, ch / 2);
+  ctx.rotate(rad * Math.PI / 180);
+  ctx.drawImage(img, -Math.round(w * scale) / 2, -Math.round(h * scale) / 2, Math.round(w * scale), Math.round(h * scale));
+  const file = await canvasToImageFile(canvas, 'rotated');
+  if (file) loadFile(file);
+}
+
 async function capturePhoto() {
+  const track = cameraStream?.getVideoTracks?.()[0];
+  if (track && typeof ImageCapture !== 'undefined') {
+    try {
+      const blob = await new ImageCapture(track).takePhoto();
+      loadFile(new File([blob], `capture-${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' }));
+      return;
+    } catch (err) { /* 部分瀏覽器或相機不支援 takePhoto，回退至 video 擷取 */ }
+  }
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   if (!video.videoWidth) { alert('相機還沒準備好，稍等一下再按一次'); return; }
@@ -1737,12 +1776,27 @@ function buildTable(words, grid) {
     });
   }
 
-  // 依 y 中心分列
+  // 依 y 中心分列（對微捲曲紙張：不同欄的水平鄰近框若垂直重疊，允許略大一點的 y 偏差）
   const yTol = Math.max(avg(words, w => w.h) * 0.55, 6);
   const rows = [];
   let cur = [], lastCy = 0;
   for (const w of [...words].sort((a, b) => a.cy - b.cy)) {
-    if (cur.length && Math.abs(w.cy - lastCy) > yTol) { rows.push(cur); cur = []; }
+    let sameRow = !cur.length || Math.abs(w.cy - lastCy) <= yTol;
+    if (!sameRow) {
+      const hasXOverlap = cur.some(c => Math.min(c.x2, w.x2) > Math.max(c.x1, w.x1));
+      if (!hasXOverlap) {
+        let nearest = cur[0], minDx = Infinity;
+        for (const c of cur) {
+          const dx = Math.abs(c.cx - w.cx);
+          if (dx < minDx) { minDx = dx; nearest = c; }
+        }
+        const yOverlap = Math.min(nearest.cy + nearest.h / 2, w.cy + w.h / 2) - Math.max(nearest.cy - nearest.h / 2, w.cy - w.h / 2);
+        if (Math.abs(w.cy - nearest.cy) <= yTol * 1.25 && yOverlap >= 0.25 * Math.min(w.h, nearest.h)) {
+          sameRow = true;
+        }
+      }
+    }
+    if (!sameRow) { rows.push(cur); cur = []; }
     cur.push(w);
     lastCy = avg(cur, c => c.cy);
   }

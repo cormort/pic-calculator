@@ -18,7 +18,8 @@ const QUALITY = {
   small: { label: '標準', size: '30MB', model: V6_SMALL_MODEL },
   medium: { label: '高精度', size: '139MB', model: V6_MEDIUM_MODEL },
 };
-const MIN_CONFIDENCE = 0.5;
+const MIN_CONFIDENCE = 0.3;
+const MIN_NUMERIC_CONFIDENCE = 0.2;
 // 轉正後畫布的最長邊。試過拉到 3200（想保留更多小字細節），實測反而退步
 // （格級 97.4% → 96.6%、數字格 97.6% → 97.0%，還慢一倍）：PP-OCR 的偵測在
 // 過大的圖上會把字切得更碎。維持 2560。
@@ -49,8 +50,24 @@ async function ensureConverter() {
   }
 }
 
+function toHalfWidthNumeric(s) {
+  return s
+    .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/[－−—–]/g, '-')
+    .replace(/．/g, '.');
+}
+
+function repairNumericToken(s) {
+  // 僅在明顯為數字儲存格（含至少一位數字，且不含一般文字）時修正常見混淆字元
+  if (!/\d/.test(s) || !/^[\d.,\-+$%()OolI|〇\s]+$/.test(s)) return s;
+  return s
+    .replace(/[Oo〇]/g, '0')
+    .replace(/[lI|]/g, '1');
+}
+
 function cleanText(t) {
-  return toTraditional(t.trim())
+  const s = repairNumericToken(toHalfWidthNumeric(toTraditional(t.trim())));
+  return s
     .replace(/(?:線|綫|综|総)計$/, '總計')   // 模型常把「總計」讀成「線計」
     .replace(/(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef(（])\s+|\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef)）])/g, '');
 }
@@ -123,9 +140,14 @@ async function runLayout(makeInputs) {
 
 async function detectTable(bitmap) {
   const N = 480, W = bitmap.width, H = bitmap.height;
+  // 等比例縮放（Letterbox 補灰邊）保留原始長寬比，避免直拍長圖被壓扁影響偵測
+  const scale = Math.min(N / W, N / H);
+  const rw = Math.round(W * scale), rh = Math.round(H * scale);
   const canvas = new OffscreenCanvas(N, N);
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(bitmap, 0, 0, N, N);
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, N, N);
+  ctx.drawImage(bitmap, 0, 0, rw, rh);
   const px = ctx.getImageData(0, 0, N, N).data;
   const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
   const data = new Float32Array(3 * N * N);
@@ -136,7 +158,7 @@ async function detectTable(bitmap) {
   }
   const out = await runLayout(() => ({
     image: new ort.Tensor('float32', data, [1, 3, N, N]),
-    scale_factor: new ort.Tensor('float32', [N / H, N / W], [1, 2]),
+    scale_factor: new ort.Tensor('float32', [scale, scale], [1, 2]),
   }));
   const det = Object.values(out).find((t) => t.dims.length === 2 && t.dims[1] === 6);
   if (!det) return null;
@@ -189,6 +211,105 @@ function homography(w, h, src) {
   return A.map((row, i) => row[8] / row[i]);
 }
 
+function estimatePaperBackground(data, w, h) {
+  const ds = Math.max(1, Math.round(Math.max(w, h) / 160));
+  const sw = Math.max(1, Math.ceil(w / ds));
+  const sh = Math.max(1, Math.ceil(h / ds));
+  const lum = new Float32Array(sw * sh);
+  for (let sy = 0; sy < sh; sy++) {
+    const y = Math.min(h - 1, sy * ds);
+    for (let sx = 0; sx < sw; sx++) {
+      const x = Math.min(w - 1, sx * ds);
+      const o = (y * w + x) * 4;
+      lum[sy * sw + sx] = data[o] * 0.299 + data[o + 1] * 0.587 + data[o + 2] * 0.114;
+    }
+  }
+  // 2D separable max filter (radius 6) 估計紙張底色，避免被深色文字拉低
+  const rMax = 6;
+  const maxH = new Float32Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    const row = y * sw;
+    for (let x = 0; x < sw; x++) {
+      let m = 0;
+      const x0 = Math.max(0, x - rMax), x1 = Math.min(sw - 1, x + rMax);
+      for (let k = x0; k <= x1; k++) if (lum[row + k] > m) m = lum[row + k];
+      maxH[row + x] = m;
+    }
+  }
+  const maxV = new Float32Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    const y0 = Math.max(0, y - rMax), y1 = Math.min(sh - 1, y + rMax);
+    for (let x = 0; x < sw; x++) {
+      let m = 0;
+      for (let k = y0; k <= y1; k++) {
+        const v = maxH[k * sw + x];
+        if (v > m) m = v;
+      }
+      maxV[y * sw + x] = m;
+    }
+  }
+  // 2D separable box blur (radius 4) 平滑背景圖
+  const rBlur = 4;
+  const blurH = new Float32Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    const row = y * sw;
+    for (let x = 0; x < sw; x++) {
+      let sum = 0, cnt = 0;
+      const x0 = Math.max(0, x - rBlur), x1 = Math.min(sw - 1, x + rBlur);
+      for (let k = x0; k <= x1; k++) { sum += maxV[row + k]; cnt++; }
+      blurH[row + x] = sum / cnt;
+    }
+  }
+  const bg = new Float32Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    const y0 = Math.max(0, y - rBlur), y1 = Math.min(sh - 1, y + rBlur);
+    for (let x = 0; x < sw; x++) {
+      let sum = 0, cnt = 0;
+      for (let k = y0; k <= y1; k++) { sum += blurH[k * sw + x]; cnt++; }
+      bg[y * sw + x] = sum / cnt;
+    }
+  }
+  return { bg, sw, sh, ds };
+}
+
+function normalizeAndSharpen(data, w, h) {
+  const { bg, sw, sh, ds } = estimatePaperBackground(data, w, h);
+  // 確認為淺底文件（避免深色背景截圖被過度提亮）
+  const sorted = Float32Array.from(bg).sort();
+  const medianBg = sorted[sorted.length >> 1] || 0;
+  if (medianBg > 100) {
+    for (let y = 0; y < h; y++) {
+      const sy = Math.min(sh - 1, (y / ds) | 0);
+      for (let x = 0; x < w; x++) {
+        const sx = Math.min(sw - 1, (x / ds) | 0);
+        const bgVal = bg[sy * sw + sx];
+        if (bgVal <= 40) continue;
+        const gain = Math.min(2.2, 238 / bgVal);
+        const o = (y * w + x) * 4;
+        data[o] = Math.min(255, data[o] * gain);
+        data[o + 1] = Math.min(255, data[o + 1] * gain);
+        data[o + 2] = Math.min(255, data[o + 2] * gain);
+      }
+    }
+  }
+  // 輕微 3×3 Unsharp Mask 銳化筆畫邊緣
+  if (w < 3 || h < 3) return;
+  const copy = new Uint8ClampedArray(data);
+  const a = 0.12; // 銳化強度 (4*a = 0.48)
+  const cWeight = 1 + 4 * a;
+  const stride = w * 4;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const o = y * stride + x * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const v = copy[o + ch] * cWeight
+          - (copy[o - 4 + ch] + copy[o + 4 + ch] + copy[o - stride + ch] + copy[o + stride + ch]) * a;
+        data[o + ch] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
+    }
+  }
+}
+
 function rectifiedCanvas(bitmap, quad) {
   const q = Array.isArray(quad) && quad.length === 4 ? quad : FULL_QUAD;
   const s0 = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
@@ -197,10 +318,6 @@ function rectifiedCanvas(bitmap, quad) {
   const sg = src.getContext('2d', { willReadFrequently: true });
   sg.drawImage(bitmap, 0, 0, W, H);
   const rgba = sg.getImageData(0, 0, W, H).data;
-  const gray = new Uint8Array(W * H);
-  for (let i = 0; i < gray.length; i++) {
-    gray[i] = rgba[i * 4] * 0.299 + rgba[i * 4 + 1] * 0.587 + rgba[i * 4 + 2] * 0.114;
-  }
 
   const pts = orderPoints(q.map(([x, y]) => [x * (W - 1), y * (H - 1)]));
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -211,7 +328,7 @@ function rectifiedCanvas(bitmap, quad) {
   const m = homography(dw - 1, dh - 1, pts);
 
   const out = new OffscreenCanvas(dw, dh);
-  const og = out.getContext('2d');
+  const og = out.getContext('2d', { willReadFrequently: true });
   const id = og.createImageData(dw, dh), d = id.data;
   const outGray = new Uint8Array(dw * dh);   // 給格線偵測用
   for (let v = 0, o = 0; v < dh; v++) {
@@ -219,12 +336,19 @@ function rectifiedCanvas(bitmap, quad) {
       const z = m[6] * u + m[7] * v + 1;
       const x = Math.min(W - 1.001, Math.max(0, (m[0] * u + m[1] * v + m[2]) / z));
       const y = Math.min(H - 1.001, Math.max(0, (m[3] * u + m[4] * v + m[5]) / z));
-      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, p = y0 * W + x0;
-      const top = gray[p] + (gray[p + 1] - gray[p]) * fx;
-      const bot = gray[p + W] + (gray[p + W + 1] - gray[p + W]) * fx;
-      d[o] = d[o + 1] = d[o + 2] = outGray[o >> 2] = top + (bot - top) * fy;
+      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
+      const p00 = (y0 * W + x0) * 4, p10 = p00 + 4, p01 = p00 + W * 4, p11 = p01 + 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = rgba[p00 + ch] + (rgba[p10 + ch] - rgba[p00 + ch]) * fx;
+        const bot = rgba[p01 + ch] + (rgba[p11 + ch] - rgba[p01 + ch]) * fx;
+        d[o + ch] = top + (bot - top) * fy;
+      }
       d[o + 3] = 255;
     }
+  }
+  normalizeAndSharpen(d, dw, dh);
+  for (let i = 0, o = 0; i < outGray.length; i++, o += 4) {
+    outGray[i] = d[o] * 0.299 + d[o + 1] * 0.587 + d[o + 2] * 0.114;
   }
   og.putImageData(id, 0, 0);
   return { canvas: out, gray: outGray, width: dw, height: dh };
@@ -295,6 +419,59 @@ function normalizedGray(st, gray, W, H) {
     }
   }
   return out;
+}
+
+async function refineLowConfidenceBoxes(svc, canvas, rawResults) {
+  const candidates = rawResults
+    .filter((r) => {
+      const t = r.text.trim();
+      return t && r.confidence >= MIN_NUMERIC_CONFIDENCE && r.confidence < 0.8 && (/[\d]/.test(t) || /^[-.,]+$/.test(t));
+    })
+    .slice(0, 12);
+  if (!candidates.length) return;
+
+  for (const r of candidates) {
+    const { x, y, width: w, height: h } = r.box;
+    if (w < 4 || h < 4) continue;
+    const pad = Math.max(4, Math.round(Math.min(w, h) * 0.35));
+    const sx = Math.max(0, Math.floor(x - pad));
+    const sy = Math.max(0, Math.floor(y - pad));
+    const sw = Math.min(canvas.width - sx, Math.ceil(w + pad * 2));
+    const sh = Math.min(canvas.height - sy, Math.ceil(h + pad * 2));
+    if (sw < 6 || sh < 6) continue;
+
+    const crop = new OffscreenCanvas(sw * 2, sh * 2);
+    const cg = crop.getContext('2d', { willReadFrequently: true });
+    cg.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw * 2, sh * 2);
+    // 局部對比拉伸，強化模糊數字筆畫
+    const id = cg.getImageData(0, 0, crop.width, crop.height);
+    const d = id.data;
+    let lo = 255, hi = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      if (lum < lo) lo = lum;
+      if (lum > hi) hi = lum;
+    }
+    if (hi - lo > 20 && hi - lo < 220) {
+      const span = hi - lo;
+      for (let i = 0; i < d.length; i += 4) {
+        for (let ch = 0; ch < 3; ch++) {
+          const v = ((d[i + ch] - lo) * 255) / span;
+          d[i + ch] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+      }
+      cg.putImageData(id, 0, 0);
+    }
+
+    try {
+      const sub = await svc.recognize(crop, { flatten: true, minimumConfidence: 0, strategy: 'per-box' });
+      const best = sub.results?.filter((sr) => sr.text.trim()).sort((a, b) => b.confidence - a.confidence)[0];
+      if (best && best.confidence > r.confidence) {
+        r.text = best.text;
+        r.confidence = best.confidence;
+      }
+    } catch (err) { /* 局部重辨識失敗則保留原結果 */ }
+  }
 }
 
 /* =============================================================
@@ -883,7 +1060,12 @@ self.onmessage = async (event) => {
       ? words.reduce((a, r) => a + r.confidence, 0) / words.length
       : 1;
     const results = words
-      .filter((r) => r.confidence >= MIN_CONFIDENCE && r.text.trim())
+      .filter((r) => {
+        const t = r.text.trim();
+        if (!t) return false;
+        const minConf = /^[-.,\d０-９－．]+$/.test(t) ? MIN_NUMERIC_CONFIDENCE : MIN_CONFIDENCE;
+        return r.confidence >= minConf;
+      })
       .map((r) => {
         const { x, y, width: w, height: h } = r.box;
         return {
