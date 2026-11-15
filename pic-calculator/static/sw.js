@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pic-calc-v55';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
+const CACHE_NAME = 'pic-calc-v56';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
 // 離線需要的殼：安裝時先存好，第一次開啟之後就能離線使用
 const SHELL = ['./', 'index.html', 'smart_total.js', 'ocr-worker.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 // 函式庫與 OCR 模型（CDN，網址帶版本不會變）：快取優先
@@ -30,8 +30,13 @@ self.addEventListener('fetch', event => {
 
   event.respondWith(caches.open(CACHE_NAME).then(async cache => {
     const save = resp => { if (resp.ok) cache.put(req, resp.clone()); return resp; };
-    if (cdn) return (await cache.match(req)) || fetch(req).then(save);
-    // 頁面與殼：網路優先（更新立即生效），離線才用快取
-    return fetch(req).then(save).catch(async () => (await cache.match(req)) || cache.match('index.html'));
+    // 本機的表格結構模型（7.7MB）也是快取優先：否則每次用到都重新下載、重寫一次快取。
+    // 換模型時跟著改 CACHE_NAME 就會重抓
+    if (cdn || url.pathname.includes('/models/')) return (await cache.match(req)) || fetch(req).then(save);
+    // 頁面與殼：網路優先（更新立即生效），離線才用快取。
+    // ignoreSearch：安裝時存的是 smart_total.js，頁面要的是 smart_total.js?v=NN；
+    // 只有「開頁面」才退回 index.html —— 拿 HTML 回應 JS／模型的請求只會讓錯誤更難懂
+    return fetch(req).then(save).catch(async () => (await cache.match(req, { ignoreSearch: true }))
+      || (req.mode === 'navigate' ? cache.match('index.html') : Response.error()));
   }));
 });
