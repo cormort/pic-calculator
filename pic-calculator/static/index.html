@@ -1104,11 +1104,11 @@
       <span class="pdf-hint">換頁後會自動框選並辨識；匯出的 CSV 檔名會帶頁碼</span>
     </div>
 
-    <!-- 手機/平板：直接開原生相機拍照（全解析度、可自動對焦），比網頁內的即時影像清楚得多 -->
-    <input type="file" id="capture-input" accept="image/*" capture="environment" hidden>
+    <!-- 手機/平板：透過 label 原生觸發相機拍照（避免部分手機瀏覽器擋掉 hidden input 的 JS .click()） -->
+    <input type="file" id="capture-input" accept="image/*" capture="environment" style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0;">
     <div class="btn-row">
       <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案</button>
-      <button class="btn btn-outline" id="camera-btn" onclick="toggleCamera()">📷 拍照</button>
+      <label for="capture-input" class="btn btn-outline" id="camera-btn" onclick="toggleCamera(event)">📷 拍照</label>
       <button class="btn btn-ghost" id="paste-btn" onclick="togglePastePanel()">📋 貼上文字／表格</button>
     </div>
 
@@ -2024,10 +2024,14 @@
       startCamera(id);
     }
 
-    async function toggleCamera() {
+    async function toggleCamera(e) {
+      const isMobile = matchMedia('(pointer: coarse), (any-pointer: coarse)').matches
+        || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      // 手機／平板直接讓 <label for="capture-input"> 原生觸發，不攔截也不靠 JS .click()
+      if (isMobile) return;
+      e?.preventDefault?.();
       const sec = document.getElementById('camera-section');
       if (sec.style.display === 'block') { stopCamera(); return; }
-      if (matchMedia('(pointer: coarse)').matches) { document.getElementById('capture-input').click(); return; }
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         alert('此瀏覽器不支援相機存取。\n\n請確保：\n1. 使用 HTTPS 連線\n2. 或在網址列點擊鎖頭圖示允許相機權限\n3. 行動裝置需點擊右上角設定 → 允許相機');
         return;
