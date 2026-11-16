@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pic-calc-v57';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
+const CACHE_NAME = 'pic-calc-v58';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
 // 離線需要的殼：安裝時先存好，第一次開啟之後就能離線使用
 const SHELL = ['./', 'index.html', 'smart_total.js', 'ocr-worker.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 // 函式庫與 OCR 模型（CDN，網址帶版本不會變）：快取優先
@@ -8,8 +8,13 @@ const CDN = /(^|\.)(jsdelivr\.net|huggingface\.co|hf\.co)$/;
 // 所以由 SW 幫自己網域的回應補上 COOP/COEP。CDN（jsDelivr、Hugging Face、gtag）
 // 都有 CORS 或 CORP，require-corp 擋不到。第一次開啟時 SW 還沒接手，下次開才生效。
 // 量測（2026-11-16，M 系列 Mac、6 張圖）：單執行緒每張約 4.2s → 4 執行緒約 2.2s，準確率不變
+// ponytail: 只在 Chromium（Chrome、Edge、Android）開。Safari／iOS 上所有瀏覽器（都是 WebKit）
+// 在 isolated 時，worker 一律拒絕 import CDN 模組（實測：伺服器直接送標頭、不經 SW 也一樣），
+// 辨識直接壞掉；COEP credentialless 則讓 Chromium 卡住。所以 WebKit 維持單執行緒。
+// 要讓 iPad 也多執行緒：把 jsDelivr 的模組改放到自己網域（同源就不受 COEP 影響）。
+const ISOLATE = /Chrome\/\d/.test(self.navigator.userAgent);
 function isolate(resp) {
-  if (!resp || resp.type === 'opaque' || resp.status === 0) return resp;
+  if (!ISOLATE || !resp || resp.type === 'opaque' || resp.status === 0) return resp;
   const headers = new Headers(resp.headers);
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
