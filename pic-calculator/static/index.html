@@ -1478,7 +1478,9 @@ function renderBackendNote() {
   const el = document.getElementById('backend-note');
   if (!el) return;
   const name = (v) => v === 'webgpu' ? 'WebGPU' : v === 'wasm' ? 'WASM' : '—';
-  el.textContent = `後端：OCR ${name(backendInfo.ocr)}／版面 ${name(backendInfo.layout)}`;
+  // 與 ocr-worker.js 的 numThreads 同一個算法：沒有 crossOriginIsolated 就只有 1 執行緒
+  const threads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+  el.textContent = `後端：OCR ${name(backendInfo.ocr)}／版面 ${name(backendInfo.layout)}／${threads > 1 ? `多執行緒 ×${threads}` : '單執行緒'}`;
   el.classList.toggle('webgpu-on', backendInfo.ocr === 'webgpu' || backendInfo.layout === 'webgpu');
 }
 
