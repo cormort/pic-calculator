@@ -12,7 +12,7 @@ const buildSrc = html.match(/function buildTable\(words, grid\) \{[\s\S]*?\n\}\n
   .replace(/\n\nasync function analyzeImage$/, "");
 // 欄／列的驗算角色（加項／減項／合計）是純邏輯，直接抽出來測
 const selSrc = [
-  html.match(/const sel = \{[\s\S]*?let selMode = 1;/)[0],
+  html.match(/const emptySel = [\s\S]*?let selMode = 1;/)[0],
   ...["autoTotalIndex", "setRole", "removeSel", "addRange", "selCount", "selIndices", "selSigns"]
     .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0]),
 ].join("\n");
@@ -165,9 +165,9 @@ assert.deepStrictEqual(emptyCol.data[1], ["租金", "12,000"]);
 
 // 欄／列角色：加項、減項、合計（先選角色再點欄號）
 // 用 Function 包一層，避免 eval 的 function 宣告蓋到測試自己的名字
-const selCtx = new Function(selSrc + "\n; return { sel, autoTotalIndex, setRole, removeSel, addRange, selCount, selIndices, selSigns };")();
-const { sel, autoTotalIndex, setRole, removeSel, addRange, selCount, selIndices, selSigns } = selCtx;
-const resetSel = () => { sel.col = { plus: [], minus: [], total: null }; sel.row = { plus: [], minus: [], total: null }; };
+const selCtx = new Function(selSrc + "\n; return { emptySel, sel, autoTotalIndex, setRole, removeSel, addRange, selCount, selIndices, selSigns };")();
+const { emptySel, sel, autoTotalIndex, setRole, removeSel, addRange, selCount, selIndices, selSigns } = selCtx;
+const resetSel = () => { sel.col = emptySel(); sel.row = emptySel(); };
 resetSel();
 setRole("col", 0, 1);            // 第1欄 加項
 setRole("col", 1, 1);            // 第2欄 加項
@@ -216,6 +216,25 @@ assert.deepStrictEqual(selIndices("col"), [1, 2, 3, 5]);
 // 點 chip 取消單一欄
 removeSel("col", 2);
 assert.deepStrictEqual(selIndices("col"), [1, 3, 5]);
+
+// 乘項 (2) 與除項 (-2)：選取順序與自動合計
+resetSel();
+setRole("col", 0, 1); setRole("col", 1, 2); setRole("col", 2, 0);
+assert.deepStrictEqual(selIndices("col"), [0, 1, 2]);
+assert.deepStrictEqual([...selSigns("col").entries()], [[0, 1], [1, 2]]);
+
+resetSel();
+setRole("col", 0, 2); setRole("col", 1, -2);
+assert.strictEqual(autoTotalIndex("col"), 1);
+assert.deepStrictEqual(selIndices("col"), [0, 1]);
+
+// Validator._evalManual：純乘、先加減後乘除、除以零保護
+const valSrc = html.match(/const Validator = \{[\s\S]*?\n\};\n/)[0];
+const valCtx = new Function("toHalfWidth", valSrc + "\n; return Validator;")(toHalfWidth);
+assert.strictEqual(valCtx._evalManual([0, 1], i => [120, 3][i], new Map([[0, 2], [1, 2]])), 360);
+assert.strictEqual(valCtx._evalManual([0, 1], i => [360, 3][i], new Map([[0, 1], [1, -2]])), 120);
+assert.strictEqual(valCtx._evalManual([0, 1, 2], i => [100, 200, 1.05][i], new Map([[0, 1], [1, 1], [2, 2]])), 315);
+assert.strictEqual(valCtx._evalManual([0, 1], i => [100, 0][i], new Map([[0, 1], [1, -2]])), null);
 
 // 全形數字、句點被讀成千分位
 assert.strictEqual(Validator._num("２００,０００"), 200000);

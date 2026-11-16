@@ -200,6 +200,8 @@
   .chip { min-height: 34px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: #fff; font-weight: 800; font-size: .85rem; cursor: pointer; touch-action: manipulation; }
   .chip.plus { color: var(--plus); background: #e8f4fd; border-color: #aed6f1; }
   .chip.minus { color: var(--minus); background: #fdedec; border-color: #f5b7b1; }
+  .chip.mul { color: #6c3483; background: #f4ecf7; border-color: #d2b4de; }
+  .chip.div { color: #117864; background: #e8f8f5; border-color: #a3e4d7; }
   .chip.target { color: var(--target); background: #fef5e7; border-color: #f8c471; }
   .chip-note { font-size: .8rem; color: var(--muted); }
   .smart-actions { margin: 6px 0 0 18px; line-height: 1.9; }
@@ -232,6 +234,10 @@
   table.data th.sel-plus::after, table.data td.row-head.sel-plus::after { content: "+"; font-size: .95rem; color: var(--plus); display: inline-block; margin-left: 3px; font-weight: 700; }
   table.data th.sel-minus, table.data td.row-head.sel-minus { background: #fadbd8; color: var(--minus); }
   table.data th.sel-minus::after, table.data td.row-head.sel-minus::after { content: "−"; font-size: .95rem; color: var(--minus); display: inline-block; margin-left: 3px; font-weight: 700; }
+  table.data th.sel-mul, table.data td.row-head.sel-mul { background: #e8daef; color: #6c3483; }
+  table.data th.sel-mul::after, table.data td.row-head.sel-mul::after { content: "×"; font-size: .95rem; color: #6c3483; display: inline-block; margin-left: 3px; font-weight: 700; }
+  table.data th.sel-div, table.data td.row-head.sel-div { background: #d1f2eb; color: #117864; }
+  table.data th.sel-div::after, table.data td.row-head.sel-div::after { content: "÷"; font-size: .95rem; color: #117864; display: inline-block; margin-left: 3px; font-weight: 700; }
   table.data th.sel-target, table.data td.row-head.sel-target { background: #fdebd0; color: var(--target); }
   table.data th.sel-target::after, table.data td.row-head.sel-target::after { content: "="; font-size: .95rem; color: var(--target); display: inline-block; margin-left: 3px; font-weight: 700; }
 
@@ -522,6 +528,8 @@
       <div class="legend">
         <span><i style="background:#d6eaf8"></i>+ 加項</span>
         <span><i style="background:#fadbd8"></i>− 減項</span>
+        <span><i style="background:#e8daef"></i>× 乘項</span>
+        <span><i style="background:#d1f2eb"></i>÷ 除項</span>
         <span><i style="background:#fdebd0"></i>= 合計</span>
         <span><i style="background:#eafaf1"></i>驗算正確／智慧合計</span>
         <span><i style="background:#fdedec"></i>驗算錯誤</span>
@@ -533,6 +541,8 @@
           <span class="sel-label">點欄號／列號時</span>
           <button class="seg on" data-role="1" onclick="setSelMode(1)">＋ 加項</button>
           <button class="seg" data-role="-1" onclick="setSelMode(-1)">− 減項</button>
+          <button class="seg" data-role="2" onclick="setSelMode(2)">× 乘項</button>
+          <button class="seg" data-role="-2" onclick="setSelMode(-2)">÷ 除項</button>
           <button class="seg" data-role="0" onclick="setSelMode(0)">＝ 合計</button>
           <button class="btn btn-ghost btn-sm" onclick="clearSelections()">清空</button>
         </div>
@@ -709,6 +719,27 @@ const Validator = {
     }
   },
 
+  _evalManual(inputs, getVal, selectedSigns) {
+    let addSum = 0, hasAdd = false, hasMulDiv = false;
+    const muls = [], divs = [];
+    for (const idx of inputs) {
+      const v = this._num(getVal(idx));
+      if (isNaN(v)) continue;
+      const role = selectedSigns.get(idx) || 1;
+      if (role === 2) { muls.push(v); hasMulDiv = true; }
+      else if (role === -2) { divs.push(v); hasMulDiv = true; }
+      else { addSum += v * role; hasAdd = true; }
+    }
+    if (!hasAdd && !hasMulDiv) return null;
+    let acc = hasAdd ? addSum : 1;
+    for (const m of muls) acc *= m;
+    for (const d of divs) {
+      if (d === 0) return null;
+      acc /= d;
+    }
+    return acc;
+  },
+
   _hManual({ sheetData, hRowIdx, maxRow, selectedIndices, selectedSigns }) {
     if (selectedIndices.length < 2) return;
     const targetIdx = selectedIndices[selectedIndices.length - 1];
@@ -718,12 +749,8 @@ const Validator = {
       if (!row) continue;
       const tv = this._num(row[targetIdx]);
       if (isNaN(tv)) continue;
-      let sum = 0, hasInput = false;
-      inputs.forEach(i => {
-        const v = this._num(row[i]);
-        if (!isNaN(v)) { sum += v * (selectedSigns.get(i) || 1); hasInput = true; }
-      });
-      if (hasInput) this._check(r, targetIdx, sum, tv);
+      const calc = this._evalManual(inputs, i => row[i], selectedSigns);
+      if (calc !== null) this._check(r, targetIdx, calc, tv);
     }
   },
 
@@ -734,12 +761,8 @@ const Validator = {
     for (let c = sColIdx; c < maxCol; c++) {
       const tv = this._num(sheetData[targetIdx]?.[c]);
       if (isNaN(tv)) continue;
-      let sum = 0, hasInput = false;
-      inputs.forEach(r => {
-        const v = this._num(sheetData[r]?.[c]);
-        if (!isNaN(v)) { sum += v * (selectedSigns.get(r) || 1); hasInput = true; }
-      });
-      if (hasInput) this._check(targetIdx, c, sum, tv);
+      const calc = this._evalManual(inputs, r => sheetData[r]?.[c], selectedSigns);
+      if (calc !== null) this._check(targetIdx, c, calc, tv);
     }
   },
 
@@ -814,12 +837,13 @@ let cameraStream = null;
 let tableData = [];           // 2D array of strings
 let cellConfidence = [];      // 與 tableData 對齊的每格 OCR 信心 (0~1)
 let cellRepairs = new Map();  // "r,c" -> { from, to } 自動整理過的數字（千分位/全形/混淆字）
-// 欄／列的驗算角色：＋ 加項、− 減項、＝ 合計（每個方向只會有一個合計）
+// 欄／列的驗算角色：＋ 加項、− 減項、× 乘項、÷ 除項、＝ 合計（每個方向只會有一個合計）
+const emptySel = () => ({ plus: [], minus: [], mul: [], div: [], order: [], total: null });
 const sel = {
-  col: { plus: [], minus: [], total: null },
-  row: { plus: [], minus: [], total: null },
+  col: emptySel(),
+  row: emptySel(),
 };
-let selMode = 1;              // 目前點欄號／列號要套用的角色：1 加項、-1 減項、0 合計
+let selMode = 1;              // 目前點欄號／列號要套用的角色：1 加項、-1 減項、2 乘項、-2 除項、0 合計
 let lastResult = null;
 let smartActive = false, smartInfo = null;   // 智慧合計
 const smartBad = new Set();                  // "r,c" -> 自動比對不符的合計
@@ -1409,8 +1433,8 @@ function setAutoMode(v) {
 
 // 切換方向時不要把摘要洗掉，所以清選取但不發訊息
 function clearSelectionsSilently() {
-  sel.col = { plus: [], minus: [], total: null };
-  sel.row = { plus: [], minus: [], total: null };
+  sel.col = emptySel();
+  sel.row = emptySel();
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
   document.getElementById('template-note').style.display = 'none';
@@ -2258,6 +2282,8 @@ function colClass(c) {
   if (k.total === c) return 'sel-target';
   if (k.plus.includes(c)) return 'sel-plus';
   if (k.minus.includes(c)) return 'sel-minus';
+  if ((k.mul || []).includes(c)) return 'sel-mul';
+  if ((k.div || []).includes(c)) return 'sel-div';
   return '';
 }
 function rowClass(r) {
@@ -2265,6 +2291,8 @@ function rowClass(r) {
   if (k.total === r) return 'sel-target';
   if (k.plus.includes(r)) return 'sel-plus';
   if (k.minus.includes(r)) return 'sel-minus';
+  if ((k.mul || []).includes(r)) return 'sel-mul';
+  if ((k.div || []).includes(r)) return 'sel-div';
   return '';
 }
 
@@ -2272,7 +2300,7 @@ function rowClass(r) {
    點選邏輯：先選角色，再點欄號／列號
    ============================================================= */
 // 原本是「點一次＋、再點−、再點取消」，要湊出「A＋B＝C」得記順序又常點錯。
-// 改成先在上面的托盤選角色（加項／減項／合計），再點欄號或列號套用；
+// 改成先在上面的托盤選角色（加項／減項／乘項／除項／合計），再點欄號或列號套用；
 // 同一個角色再點一次就取消，換角色直接再點即可。
 function setSelMode(role) {
   selMode = role;
@@ -2282,43 +2310,65 @@ function setSelMode(role) {
   const hint = document.getElementById('sel-mode-hint');
   if (hint) hint.textContent = role === 1 ? '點欄號／列號 → 加項（最後點的那一個自動當「等於」）'
     : role === -1 ? '點欄號／列號 → 減項'
+    : role === 2 ? '點欄號／列號 → 乘項（先算加減總和，再乘除）'
+    : role === -2 ? '點欄號／列號 → 除項（先算加減總和，再乘除）'
     : '點欄號／列號 → 指定「等於」（合計不在最後時才需要點）';
 }
 
 function setRole(kind, idx, role) {
   const k = sel[kind];
-  const cur = k.total === idx ? 0 : k.plus.includes(idx) ? 1 : k.minus.includes(idx) ? -1 : null;
+  k.mul = k.mul || []; k.div = k.div || []; k.order = k.order || [];
+  const cur = k.total === idx ? 0
+    : k.plus.includes(idx) ? 1
+    : k.minus.includes(idx) ? -1
+    : k.mul.includes(idx) ? 2
+    : k.div.includes(idx) ? -2
+    : null;
   k.plus = k.plus.filter(i => i !== idx);
   k.minus = k.minus.filter(i => i !== idx);
+  k.mul = k.mul.filter(i => i !== idx);
+  k.div = k.div.filter(i => i !== idx);
+  k.order = k.order.filter(i => i !== idx);
   if (k.total === idx) k.total = null;
   if (cur === role) return;             // 再點一次同角色 → 取消
   if (role === 0) k.total = idx;
-  else if (role === 1) k.plus.push(idx);
-  else k.minus.push(idx);
+  else {
+    if (role === 1) k.plus.push(idx);
+    else if (role === -1) k.minus.push(idx);
+    else if (role === 2) k.mul.push(idx);
+    else if (role === -2) k.div.push(idx);
+    k.order.push(idx);
+  }
 }
 
 function removeSel(kind, idx) {
   const k = sel[kind];
   k.plus = k.plus.filter(i => i !== idx);
   k.minus = k.minus.filter(i => i !== idx);
+  if (k.mul) k.mul = k.mul.filter(i => i !== idx);
+  if (k.div) k.div = k.div.filter(i => i !== idx);
+  if (k.order) k.order = k.order.filter(i => i !== idx);
   if (k.total === idx) k.total = null;
 }
 
 // Shift＋點：把前一個到這一個整段都設成「加項」
 function addRange(kind, idx) {
   const k = sel[kind];
-  const anchor = [...k.plus, ...k.minus].slice(-1)[0];
+  k.mul = k.mul || []; k.div = k.div || []; k.order = k.order || [];
+  const ordered = k.order.length ? k.order : [...k.plus, ...k.minus, ...k.mul, ...k.div];
+  const anchor = ordered.slice(-1)[0];
   if (anchor === undefined) { setRole(kind, idx, selMode); return; }
   const lo = Math.min(anchor, idx), hi = Math.max(anchor, idx);
   for (let i = lo; i <= hi; i++) {
-    if (i === k.total || k.plus.includes(i) || k.minus.includes(i)) continue;
+    if (i === k.total || k.plus.includes(i) || k.minus.includes(i) || k.mul.includes(i) || k.div.includes(i)) continue;
     k.plus.push(i);
+    k.order.push(i);
   }
 }
 
 function selCount(kind) {
   const k = sel[kind];
-  return k.plus.length + k.minus.length + (k.total !== null ? 1 : 0);
+  return k.plus.length + k.minus.length + (k.mul?.length || 0) + (k.div?.length || 0) + (k.total !== null ? 1 : 0);
 }
 /* 預設手勢就是「一直點欄號都是加項，最後點的那一個是等於」：
  * 不必先回托盤把角色切成「＝」。只有合計欄不在最後（例如合計在中間）
@@ -2326,15 +2376,16 @@ function selCount(kind) {
 function autoTotalIndex(kind) {
   const k = sel[kind];
   if (k.total !== null) return null;                  // 已明確指定
-  const ordered = [...k.plus, ...k.minus];
+  const ordered = k.order?.length ? k.order : [...k.plus, ...k.minus, ...(k.mul || []), ...(k.div || [])];
   return ordered.length >= 2 ? ordered[ordered.length - 1] : null;
 }
 
-// 給 Validator 用：加項在前、合計在最後；沒有指定合計時沿用最後選的那一個
+// 給 Validator 用：運算項在前、合計在最後；沒有指定合計時沿用最後選的那一個
 function selIndices(kind) {
   const k = sel[kind];
   const auto = autoTotalIndex(kind);
-  const idx = [...k.plus, ...k.minus].filter(i => i !== auto);
+  const all = [...k.plus, ...k.minus, ...(k.mul || []), ...(k.div || [])];
+  const idx = all.filter(i => i !== auto);
   if (k.total !== null) idx.push(k.total);
   else if (auto !== null) idx.push(auto);
   return idx;
@@ -2343,6 +2394,8 @@ function selSigns(kind) {
   const m = new Map();
   sel[kind].plus.forEach(i => m.set(i, 1));
   sel[kind].minus.forEach(i => m.set(i, -1));
+  (sel[kind].mul || []).forEach(i => m.set(i, 2));
+  (sel[kind].div || []).forEach(i => m.set(i, -2));
   return m;
 }
 
@@ -2427,8 +2480,8 @@ function renderSelectionTray() {
   const chips = [];
   const name = { col: '欄', row: '列' };
   const push = (kind, idx, role, autoTotal) => {
-    const label = role === 0 ? '＝' : role === 1 ? '＋' : '−';
-    const cls = role === 0 ? 'target' : role === 1 ? 'plus' : 'minus';
+    const label = role === 0 ? '＝' : role === 1 ? '＋' : role === -1 ? '−' : role === 2 ? '×' : '÷';
+    const cls = role === 0 ? 'target' : role === 1 ? 'plus' : role === -1 ? 'minus' : role === 2 ? 'mul' : 'div';
     const tip = autoTotal ? '最後點的那一個自動當「等於」；點一下取消這一欄／列' : '點一下取消';
     chips.push(`<button class="chip ${cls}" onclick="removeSel('${kind}',${idx}); afterSelectionChange()" `
       + `title="${tip}">${name[kind]}${idx + 1} ${label}</button>`);
@@ -2439,6 +2492,8 @@ function renderSelectionTray() {
     const auto = autoTotalIndex(kind);
     k.plus.filter(i => i !== auto).forEach(i => push(kind, i, 1));
     k.minus.filter(i => i !== auto).forEach(i => push(kind, i, -1));
+    (k.mul || []).filter(i => i !== auto).forEach(i => push(kind, i, 2));
+    (k.div || []).filter(i => i !== auto).forEach(i => push(kind, i, -2));
     if (auto !== null) { push(kind, auto, 0, true); anyAuto = true; }
     else if (k.total !== null) push(kind, k.total, 0, false);
   }
@@ -2449,8 +2504,8 @@ function renderSelectionTray() {
 
 function clearSelections() {
   document.getElementById('template-note').style.display = 'none';
-  sel.col = { plus: [], minus: [], total: null };
-  sel.row = { plus: [], minus: [], total: null };
+  sel.col = emptySel();
+  sel.row = emptySel();
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
   renderSelectionTray();
@@ -2733,8 +2788,8 @@ function runSmartTotals(showEmpty = false) {
     alert('智慧合計模組未載入，請重新整理頁面。');
     return;
   }
-  sel.col = { plus: [], minus: [], total: null };
-  sel.row = { plus: [], minus: [], total: null };
+  sel.col = emptySel();
+  sel.row = emptySel();
   renderSelectionTray();
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
@@ -3066,8 +3121,8 @@ function applyTemplate() {
       // 驗算摘要會蓋掉「辨識完成／圖片模糊」的提醒，兩條都留著
       const summary = document.getElementById('summary'), before = summary.innerHTML;
       clearSmart();
-      sel.col = m.col || { plus: [], minus: [], total: null };
-      sel.row = m.row || { plus: [], minus: [], total: null };
+      sel.col = { ...emptySel(), ...(m.col || {}) };
+      sel.row = { ...emptySel(), ...(m.row || {}) };
       afterSelectionChange();
       if (summary.innerHTML !== before) summary.innerHTML = before + summary.innerHTML;
     } else if (m.totals.length) {
