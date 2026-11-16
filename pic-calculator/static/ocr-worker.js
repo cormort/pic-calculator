@@ -13,6 +13,10 @@ import {
 // 與 ppu 內部使用同一個 onnxruntime-web 模組（同版本、同 URL），避免載入兩份 runtime
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/+esm';
 
+// 多執行緒 WASM 需要 crossOriginIsolated（COOP/COEP）；沒有就只能單執行緒。
+// 要在第一個 session 建立前設定，之後改不了
+ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+
 const QUALITY = {
   tiny: { label: '快速', size: '6MB', model: null },
   small: { label: '標準', size: '30MB', model: V6_SMALL_MODEL },
@@ -100,7 +104,6 @@ async function getLayoutSession() {
   if (!ort.env.wasm.wasmPaths) {
     ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/';
   }
-  ort.env.wasm.numThreads = 1;
   ort.env.wasm.proxy = false;
   layoutSession = await createLayoutSession(['wasm']);
   layoutEps = ['wasm'];
