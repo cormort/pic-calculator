@@ -279,6 +279,11 @@ function normalizeAndSharpen(data, w, h) {
       }
     }
   }
+  // ponytail: 對比度、中值去噪都量過，不加（2026-11-15，6 張圖，格級／數字格）：
+  //   現行 95.0/97.6；中值 3×3 → 94.2/94.5（逗號、小數點被抹掉，a、b 掉最多）；
+  //   對比 1.2× → 93.7/97.6（e-balance-photo 90→98.3，但 a、b、c 各掉 3~5 格；
+  //   b 也是實拍，所以「只對照片套」也救不了）；兩者並用 → 94.5/97.0。
+  //   等有更多真實手機照再重測對比度。
   // 輕微 3×3 Unsharp Mask 銳化筆畫邊緣
   if (w < 3 || h < 3) return;
   const copy = new Uint8ClampedArray(data);

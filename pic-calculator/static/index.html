@@ -2346,7 +2346,15 @@ function selSigns(kind) {
   return m;
 }
 
+// 改完格子直接點欄號／列號：mousedown 時先不讓格子失焦（見下方 mousedown 監聽），
+// 改在 click 裡先存檔。否則 blur → 重繪表格發生在按下與放開之間，這一下點擊會被吃掉
+function commitEditingCell() {
+  const td = document.activeElement;
+  if (td?.matches?.('#data-table td[contenteditable]')) { onCellEdit(td); td.blur(); }
+}
+
 function onColClick(c, ev) {
+  commitEditingCell();
   clearSmart();   // 手動選取時改用驗算角色
   useManualMode();   // 自動模式下點欄號＝你要自己指定，切回手動才不會「點了沒反應」
   if (ev && ev.shiftKey) addRange('col', c);
@@ -2354,6 +2362,7 @@ function onColClick(c, ev) {
   afterSelectionChange();
 }
 function onRowClick(r, ev) {
+  commitEditingCell();
   clearSmart();
   useManualMode();
   if (ev && ev.shiftKey) addRange('row', r);
@@ -3131,12 +3140,13 @@ function validate() {
     list.push(...res.errorList);
     for (const [k, e] of Validator.errors) {
       const cellKey = Math.floor(k);
-      const prev = merged.get(cellKey);
-      if (!prev || (prev.ok && !e.ok)) merged.set(cellKey, e);
+      const prev = merged.get(cellKey)?.[1];
+      // 存回原本的 key：正確格是 key+0.1（isOk 靠它），用 floor 後的 key 會讓正確格永遠不變綠
+      if (!prev || (prev.ok && !e.ok)) merged.set(cellKey, [k, e]);
     }
   }
   Validator.errors.clear();
-  merged.forEach((v, k) => Validator.errors.set(k, v));
+  merged.forEach(([k, v]) => Validator.errors.set(k, v));
 
   smartUnparsed = unparsedNumericCells(tableData);   // 讓表格標出「看不出是數字」的格
   renderTable();
@@ -3672,6 +3682,12 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'Enter') { if (go(1, 0)) td.blur(); }
   else if (ev.key === 'ArrowDown') go(1, 0);
   else if (ev.key === 'ArrowUp') go(-1, 0);
+});
+
+// 編輯中按欄號／列號：不讓格子在 mousedown 失焦（存檔交給 onColClick/onRowClick）
+document.addEventListener('mousedown', ev => {
+  if (ev.target?.closest?.('#data-table th[data-col], #data-table td.row-head[data-row]')
+    && document.activeElement?.matches?.('#data-table td[contenteditable]')) ev.preventDefault();
 });
 
 // 表頭用鍵盤操作：Tab 移到欄號／列號，Enter 或空白鍵套用目前角色
