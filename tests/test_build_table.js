@@ -217,24 +217,36 @@ assert.deepStrictEqual(selIndices("col"), [1, 2, 3, 5]);
 removeSel("col", 2);
 assert.deepStrictEqual(selIndices("col"), [1, 3, 5]);
 
-// 乘項 (2) 與除項 (-2)：選取順序與自動合計
+// 乘除：固定 3 個（被乘數→乘數→積／被除數→除數→商），依點選順序
+const selReady = new Function("sel", "selCount", html.match(/function selReady\([^)]*\) \{[\s\S]*?\n\}/)[0] + "; return selReady;")(sel, selCount);
 resetSel();
-setRole("col", 0, 1); setRole("col", 1, 2); setRole("col", 2, 0);
+setRole("col", 0, 2); setRole("col", 1, 2);
+assert.strictEqual(selReady("col"), false);            // 才 2 個，不驗
+setRole("col", 2, 2);
+assert.strictEqual(selReady("col"), true);
+assert.deepStrictEqual(selIndices("col"), [0, 1, 2]);   // 最後點的當積
+assert.strictEqual(setRole("col", 3, 2), "full");       // 第 4 個不收
 assert.deepStrictEqual(selIndices("col"), [0, 1, 2]);
-assert.deepStrictEqual([...selSigns("col").entries()], [[0, 1], [1, 2]]);
-
+setRole("col", 4, 1);                                    // 換成加項 → 清掉乘法
+assert.deepStrictEqual(selIndices("col"), [4]);
 resetSel();
-setRole("col", 0, 2); setRole("col", 1, -2);
-assert.strictEqual(autoTotalIndex("col"), 1);
-assert.deepStrictEqual(selIndices("col"), [0, 1]);
+setRole("col", 0, 1); setRole("col", 1, 1); setRole("col", 2, -2);   // 加項後點除 → 重新開始
+assert.deepStrictEqual(selIndices("col"), [2]);
+resetSel();
+setRole("col", 3, 0); setRole("col", 0, -2); setRole("col", 1, -2);   // 先指定商也可以
+assert.deepStrictEqual(selIndices("col"), [0, 1, 3]);
+assert.strictEqual(selReady("col"), true);
 
-// Validator._evalManual：純乘、先加減後乘除、除以零保護
+// Validator._evalManual：乘除兩個運算元依順序算，除以零不驗；加減不受影響
 const valSrc = html.match(/const Validator = \{[\s\S]*?\n\};\n/)[0];
 const valCtx = new Function("toHalfWidth", valSrc + "\n; return Validator;")(toHalfWidth);
-assert.strictEqual(valCtx._evalManual([0, 1], i => [120, 3][i], new Map([[0, 2], [1, 2]])), 360);
-assert.strictEqual(valCtx._evalManual([0, 1], i => [360, 3][i], new Map([[0, 1], [1, -2]])), 120);
-assert.strictEqual(valCtx._evalManual([0, 1, 2], i => [100, 200, 1.05][i], new Map([[0, 1], [1, 1], [2, 2]])), 315);
-assert.strictEqual(valCtx._evalManual([0, 1], i => [100, 0][i], new Map([[0, 1], [1, -2]])), null);
+const ev = (vals, roles) => valCtx._evalManual(vals.map((_, i) => i), i => vals[i], new Map(roles.map((r, i) => [i, r])));
+assert.strictEqual(ev([120, 3], [2, 2]), 360);
+assert.strictEqual(ev([360, 3], [-2, -2]), 120);     // 被除數 ÷ 除數，不是 1÷360÷3
+assert.strictEqual(ev([3, 360], [-2, -2]), 3 / 360);
+assert.strictEqual(ev([100, 0], [-2, -2]), null);
+assert.strictEqual(ev([1, 2, 3], [2, 2, 2]), null);  // 乘除只吃 2 個運算元
+assert.strictEqual(ev([100, 200, 50], [1, 1, -1]), 250);
 
 // 全形數字、句點被讀成千分位
 assert.strictEqual(Validator._num("２００,０００"), 200000);

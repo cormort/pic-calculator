@@ -719,25 +719,22 @@ const Validator = {
     }
   },
 
+  // 加減：任意個數相加。乘除：固定兩個運算元（依點選順序 被乘數×乘數、被除數÷除數），不與加減混用
   _evalManual(inputs, getVal, selectedSigns) {
-    let addSum = 0, hasAdd = false, hasMulDiv = false;
-    const muls = [], divs = [];
+    const op = inputs.map(i => selectedSigns.get(i)).find(r => r === 2 || r === -2);
+    if (op) {
+      if (inputs.length !== 2) return null;
+      const [a, b] = inputs.map(i => this._num(getVal(i)));
+      if (isNaN(a) || isNaN(b)) return null;
+      if (op === 2) return a * b;
+      return b === 0 ? null : a / b;
+    }
+    let sum = 0, hasInput = false;
     for (const idx of inputs) {
       const v = this._num(getVal(idx));
-      if (isNaN(v)) continue;
-      const role = selectedSigns.get(idx) || 1;
-      if (role === 2) { muls.push(v); hasMulDiv = true; }
-      else if (role === -2) { divs.push(v); hasMulDiv = true; }
-      else { addSum += v * role; hasAdd = true; }
+      if (!isNaN(v)) { sum += v * (selectedSigns.get(idx) || 1); hasInput = true; }
     }
-    if (!hasAdd && !hasMulDiv) return null;
-    let acc = hasAdd ? addSum : 1;
-    for (const m of muls) acc *= m;
-    for (const d of divs) {
-      if (d === 0) return null;
-      acc /= d;
-    }
-    return acc;
+    return hasInput ? sum : null;
   },
 
   _hManual({ sheetData, hRowIdx, maxRow, selectedIndices, selectedSigns }) {
@@ -2310,8 +2307,8 @@ function setSelMode(role) {
   const hint = document.getElementById('sel-mode-hint');
   if (hint) hint.textContent = role === 1 ? '點欄號／列號 → 加項（最後點的那一個自動當「等於」）'
     : role === -1 ? '點欄號／列號 → 減項'
-    : role === 2 ? '點欄號／列號 → 乘項（先算加減總和，再乘除）'
-    : role === -2 ? '點欄號／列號 → 除項（先算加減總和，再乘除）'
+    : role === 2 ? '依序點 3 個：被乘數 → 乘數 → 積'
+    : role === -2 ? '依序點 3 個：被除數 → 除數 → 商'
     : '點欄號／列號 → 指定「等於」（合計不在最後時才需要點）';
 }
 
@@ -2331,6 +2328,14 @@ function setRole(kind, idx, role) {
   k.order = k.order.filter(i => i !== idx);
   if (k.total === idx) k.total = null;
   if (cur === role) return;             // 再點一次同角色 → 取消
+  // 乘除只有 3 個數（被乘數、乘數、積／被除數、除數、商），不跟加減或另一種運算混用：
+  // 換運算就清掉這個方向原本的選取；已經滿 3 個就不再加
+  const isOp = r => r === 2 || r === -2;
+  const curOp = k.mul.length ? 2 : k.div.length ? -2 : null;
+  if (role !== 0 && (isOp(role) || curOp) && role !== curOp) {
+    Object.assign(k, emptySel(), { total: k.total });
+  }
+  if ((isOp(role) || (role === 0 && curOp)) && selCount(kind) >= 3) return 'full';
   if (role === 0) k.total = idx;
   else {
     if (role === 1) k.plus.push(idx);
@@ -2357,7 +2362,8 @@ function addRange(kind, idx) {
   k.mul = k.mul || []; k.div = k.div || []; k.order = k.order || [];
   const ordered = k.order.length ? k.order : [...k.plus, ...k.minus, ...k.mul, ...k.div];
   const anchor = ordered.slice(-1)[0];
-  if (anchor === undefined) { setRole(kind, idx, selMode); return; }
+  // 乘除固定 3 個，不支援整段選取
+  if (anchor === undefined || k.mul.length || k.div.length || Math.abs(selMode) === 2) return setRole(kind, idx, selMode);
   const lo = Math.min(anchor, idx), hi = Math.max(anchor, idx);
   for (let i = lo; i <= hi; i++) {
     if (i === k.total || k.plus.includes(i) || k.minus.includes(i) || k.mul.includes(i) || k.div.includes(i)) continue;
@@ -2369,6 +2375,11 @@ function addRange(kind, idx) {
 function selCount(kind) {
   const k = sel[kind];
   return k.plus.length + k.minus.length + (k.mul?.length || 0) + (k.div?.length || 0) + (k.total !== null ? 1 : 0);
+}
+// 可以驗算了嗎：加減至少 2 個（1 加項＋1 合計）；乘除要剛好 3 個
+function selReady(kind) {
+  const k = sel[kind];
+  return (k.mul?.length || k.div?.length) ? selCount(kind) === 3 : selCount(kind) >= 2;
 }
 /* 預設手勢就是「一直點欄號都是加項，最後點的那一個是等於」：
  * 不必先回托盤把角色切成「＝」。只有合計欄不在最後（例如合計在中間）
@@ -2406,20 +2417,21 @@ function commitEditingCell() {
   if (td?.matches?.('#data-table td[contenteditable]')) { onCellEdit(td); td.blur(); }
 }
 
+const OP_FULL_MSG = '⚠️ 乘除只能選 3 個（被乘數、乘數、積／被除數、除數、商）。點托盤上的項目可取消。';
 function onColClick(c, ev) {
   commitEditingCell();
   clearSmart();   // 手動選取時改用驗算角色
   useManualMode();   // 自動模式下點欄號＝你要自己指定，切回手動才不會「點了沒反應」
-  if (ev && ev.shiftKey) addRange('col', c);
-  else setRole('col', c, selMode);
+  const res = ev && ev.shiftKey ? addRange('col', c) : setRole('col', c, selMode);
+  if (res === 'full') { renderSummary({ kind: 'warn', text: OP_FULL_MSG }); return; }
   afterSelectionChange();
 }
 function onRowClick(r, ev) {
   commitEditingCell();
   clearSmart();
   useManualMode();
-  if (ev && ev.shiftKey) addRange('row', r);
-  else setRole('row', r, selMode);
+  const res = ev && ev.shiftKey ? addRange('row', r) : setRole('row', r, selMode);
+  if (res === 'full') { renderSummary({ kind: 'warn', text: OP_FULL_MSG }); return; }
   afterSelectionChange();
 }
 
@@ -2436,12 +2448,17 @@ function useManualMode() {
 function afterSelectionChange() {
   renderSelectionTray();
   if (autoMode !== 'manual') { validate(); return; }   // 自動方向：選取不參與，直接重驗
-  if (selCount('col') >= 2 || selCount('row') >= 2) { validate(); return; }
+  if (selReady('col') || selReady('row')) { validate(); return; }
   const hadResult = Validator.errors.size > 0;
   Validator.errors.clear();
   document.getElementById('error-card').style.display = 'none';
   renderTable();
-  if (hadResult) {
+  const opKind = ['col', 'row'].find(kd => sel[kd].mul?.length || sel[kd].div?.length);
+  if (opKind) {
+    const k = sel[opKind];
+    renderSummary({ kind: 'info', text: `${k.mul.length ? '乘法' : '除法'}還要再選 ${3 - selCount(opKind)} 個（`
+      + `${k.mul.length ? '被乘數 → 乘數 → 積' : '被除數 → 除數 → 商'}）。` });
+  } else if (hadResult) {
     renderSummary({ kind: 'info', text: '已取消選取。至少要有「1 個加項 ＋ 1 個合計」才會驗算。' });
   }
 }
@@ -2479,8 +2496,8 @@ function renderSelectionTray() {
   if (!box) return;
   const chips = [];
   const name = { col: '欄', row: '列' };
-  const push = (kind, idx, role, autoTotal) => {
-    const label = role === 0 ? '＝' : role === 1 ? '＋' : role === -1 ? '−' : role === 2 ? '×' : '÷';
+  const push = (kind, idx, role, autoTotal, text) => {
+    const label = text ? text : role === 0 ? '＝' : role === 1 ? '＋' : role === -1 ? '−' : role === 2 ? '×' : '÷';
     const cls = role === 0 ? 'target' : role === 1 ? 'plus' : role === -1 ? 'minus' : role === 2 ? 'mul' : 'div';
     const tip = autoTotal ? '最後點的那一個自動當「等於」；點一下取消這一欄／列' : '點一下取消';
     chips.push(`<button class="chip ${cls}" onclick="removeSel('${kind}',${idx}); afterSelectionChange()" `
@@ -2492,10 +2509,12 @@ function renderSelectionTray() {
     const auto = autoTotalIndex(kind);
     k.plus.filter(i => i !== auto).forEach(i => push(kind, i, 1));
     k.minus.filter(i => i !== auto).forEach(i => push(kind, i, -1));
-    (k.mul || []).filter(i => i !== auto).forEach(i => push(kind, i, 2));
-    (k.div || []).filter(i => i !== auto).forEach(i => push(kind, i, -2));
-    if (auto !== null) { push(kind, auto, 0, true); anyAuto = true; }
-    else if (k.total !== null) push(kind, k.total, 0, false);
+    // 乘除依點選順序標名稱：第 1 個被乘數／被除數、第 2 個乘數／除數、合計是積／商
+    (k.mul || []).filter(i => i !== auto).forEach((i, n) => push(kind, i, 2, false, n ? '× 乘數' : '被乘數'));
+    (k.div || []).filter(i => i !== auto).forEach((i, n) => push(kind, i, -2, false, n ? '÷ 除數' : '被除數'));
+    const result = k.mul?.length ? '＝ 積' : k.div?.length ? '＝ 商' : '';
+    if (auto !== null) { push(kind, auto, 0, true, result); anyAuto = true; }
+    else if (k.total !== null) push(kind, k.total, 0, false, result);
   }
   const auto = anyAuto
     ? '<span class="chip-note">最後點的那一個自動當「等於」；合計不在最後時才需要點托盤的「＝」</span>' : '';
@@ -3176,8 +3195,8 @@ function validate() {
   if (autoMode !== 'manual') {
     jobs.push({ mode: autoMode, selectedIndices: [nameColGuess()], selectedSigns: new Map() });
   } else {
-    if (selCount('col') >= 2) jobs.push({ mode: 'horizontal', selectedIndices: selIndices('col'), selectedSigns: selSigns('col') });
-    if (selCount('row') >= 2) jobs.push({ mode: 'vertical_row', selectedIndices: selIndices('row'), selectedSigns: selSigns('row') });
+    if (selReady('col')) jobs.push({ mode: 'horizontal', selectedIndices: selIndices('col'), selectedSigns: selSigns('col') });
+    if (selReady('row')) jobs.push({ mode: 'vertical_row', selectedIndices: selIndices('row'), selectedSigns: selSigns('row') });
   }
   if (!jobs.length) {
     renderSummary({ kind: 'warn', text: '⚠️ 請至少選 2 個欄或 2 個列（1 個加項＋1 個合計），或把「驗算方向」改成自動。' });
