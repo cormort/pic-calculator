@@ -6,8 +6,6 @@
  */
 import {
   PaddleOcrService,
-  V6_SMALL_MODEL,
-  V6_MEDIUM_MODEL,
   getDefaultWebExecutionProviders,
 } from 'https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/+esm';
 // 與 ppu 內部使用同一個 onnxruntime-web 模組（同版本、同 URL），避免載入兩份 runtime
@@ -17,10 +15,18 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/+esm';
 // 要在第一個 session 建立前設定，之後改不了
 ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
 
+// OCR 模型放在自己網域（models/，取自 HF snowfluke/ppu-paddle-ocr-models）：
+// 有些 Android 手機用 fetch 跨網域抓 HF 會 Failed to fetch（網址列直接下載卻正常）
+const M = new URL('models/', self.location.href).href;
+const local = (size, dict = 'ppocrv6_dict.txt') => ({
+  detection: `${M}PP-OCRv6_${size}_det.ort`,
+  recognition: `${M}PP-OCRv6_${size}_rec.ort`,
+  charactersDictionary: `${M}${dict}`,
+});
 const QUALITY = {
-  tiny: { label: '快速', size: '6MB', model: null },
-  small: { label: '標準', size: '30MB', model: V6_SMALL_MODEL },
-  medium: { label: '高精度', size: '139MB', model: V6_MEDIUM_MODEL },
+  tiny: { label: '快速', size: '6MB', model: local('tiny', 'ppocrv6_tiny_dict.txt') },
+  small: { label: '標準', size: '30MB', model: local('small') },
+  medium: { label: '高精度', size: '139MB', model: local('medium') },
 };
 const MIN_CONFIDENCE = 0.3;
 const MIN_NUMERIC_CONFIDENCE = 0.2;
@@ -30,7 +36,7 @@ const MIN_NUMERIC_CONFIDENCE = 0.2;
 const RECT_MAX_SIDE = 2560;
 const FULL_QUAD = [[0, 0], [1, 0], [1, 1], [0, 1]];
 
-const LAYOUT_MODEL = 'https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolve/7e851b9e5ad66613d7318a3213ab3336ebe0a514/pp_doclayout_s.onnx';
+const LAYOUT_MODEL = 'models/pp_doclayout_s.onnx';   // 取自 HF stefanj0/PP-DocLayout-S-ONNX@7e851b9
 const TABLE_CLASS = 8, FALLBACK_CLASSES = [1, 18], TABLE_MIN_SCORE = 0.5;
 
 let service = null, serviceQuality = null, serviceBackend = null, toTraditional = null;
@@ -73,9 +79,7 @@ async function ensureService(quality) {
   }
   const info = QUALITY[q];
   postStatus(`載入${info.label}模型（首次約 ${info.size}）…`);
-  const svc = info.model
-    ? new PaddleOcrService({ model: info.model })
-    : new PaddleOcrService();
+  const svc = new PaddleOcrService({ model: info.model });
   await Promise.all([svc.initialize(), ensureConverter()]);
   const providers = svc.options?.session?.executionProviders || [];
   serviceBackend = providers.includes('webgpu') ? 'webgpu' : 'wasm';
@@ -903,7 +907,7 @@ function rowsToTable(rows, words) {
   return { grid, conf, boxes, spans, cells: cells.length, rows: grid.length, cols: ncol };
 }
 
-const TATR_MODEL = 'https://huggingface.co/Xenova/table-transformer-structure-recognition-v1.1-fin/resolve/e9c9948662f4021563cefca1c183f246ad472c79/onnx/model_quantized.onnx';
+const TATR_MODEL = 'models/tatr_quantized.onnx';   // 取自 HF Xenova/table-transformer-structure-recognition-v1.1-fin@e9c9948 onnx/model_quantized.onnx
 let tatrSession = null, tatrUnavailable = false;
 
 async function getTatrSession() {
