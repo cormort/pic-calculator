@@ -583,7 +583,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=61"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=62"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -1445,7 +1445,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v61';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v62';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1594,16 +1594,19 @@ function setOcrQuality(q) {
 
 /* 模型預先下載：與辨識分開，手機上可先在 Wi‑Fi 下載好。檔名要與 ocr-worker.js 一致。
    存進 SW 的模型快取（sw.js 的 MODEL_CACHE，改版不清），worker 之後直接命中 */
-function modelUrls(q) {
+// 表格結構模型（slanet）只在沒有格線時才用到，一般辨識不會抓它：
+// 只當下載的附帶項目，不算進「已下載」的判斷，否則辨識過也一直顯示尚未下載
+function modelUrls(q, withExtra = false) {
   const dict = q === 'tiny' ? 'ppocrv6_tiny_dict.txt' : 'ppocrv6_dict.txt';
-  return [`PP-OCRv6_${q}_det.ort`, `PP-OCRv6_${q}_rec.ort`, dict, 'pp_doclayout_s.onnx', 'slanet_plus.onnx']
+  return [`PP-OCRv6_${q}_det.ort`, `PP-OCRv6_${q}_rec.ort`, dict, 'pp_doclayout_s.onnx', ...(withExtra ? ['slanet_plus.onnx'] : [])]
     .map(f => new URL('models/' + f, location.href).href);
 }
-async function missingModels(q) {
+async function missingModels(q, withExtra = false) {
   if (!self.caches) return [];
   const cache = await caches.open('pic-calc-models');
-  const hits = await Promise.all(modelUrls(q).map(u => cache.match(u)));
-  return modelUrls(q).filter((u, i) => !hits[i]);
+  const urls = modelUrls(q, withExtra);
+  const hits = await Promise.all(urls.map(u => cache.match(u)));
+  return urls.filter((u, i) => !hits[i]);
 }
 async function checkModels() {
   const btn = document.getElementById('model-dl-btn'), note = document.getElementById('model-dl-note');
@@ -1620,7 +1623,7 @@ async function downloadModels() {
   navigator.storage?.persist?.();   // 請瀏覽器別在空間不足時自動清掉模型
   try {
     const cache = await caches.open('pic-calc-models');
-    const urls = await missingModels(ocrQuality);
+    const urls = await missingModels(ocrQuality, true);
     // ponytail: 不顯示總量。GitHub Pages 用 gzip 傳，content-length 是壓縮後大小，
     // 讀到的卻是解壓後位元組，兩者對不上（標準：傳 37.8MB、解開 44MB）
     let done = 0;
@@ -1634,11 +1637,12 @@ async function downloadModels() {
         chunks.push(value); done += value.length;
         note.textContent = `下載中…第 ${i + 1}／${urls.length} 個檔，已 ${(done / 1e6).toFixed(1)} MB`;
       }
-      // 有 SW 接手時 SW 已經存了；沒有（第一次開啟）才自己存
-      if (!navigator.serviceWorker?.controller) await cache.put(u, new Response(new Blob(chunks)));
+      // 自己存並等它存完：SW 的背景存檔在手機上失敗也不會報錯，畫面就一直顯示「尚未下載」
+      try { await cache.put(u, new Response(new Blob(chunks))); }
+      catch (e) { throw new Error(`存檔失敗：${e.name || ''} ${e.message || e}。請清出手機空間，或改用「快速」精度`); }
     }
   } catch (err) {
-    note.textContent = `❌ 下載失敗（${err.message || err}），請換個網路再按一次`;
+    note.textContent = String(err.message).startsWith('存檔失敗') ? `❌ ${err.message}` : `❌ 下載失敗（${err.message || err}），請換個網路再按一次`;
     btn.disabled = false;
     return;
   }
