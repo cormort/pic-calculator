@@ -363,7 +363,8 @@
     <button class="btn btn-ghost" id="paste-btn" onclick="togglePastePanel()">📋 貼上文字／表格</button>
   </div>
   <div class="quality-row" style="margin-top:6px;justify-content:center;">
-    <button class="btn btn-ghost btn-sm" id="model-dl-btn" onclick="downloadModels()" hidden>⬇ 先下載模型</button>
+    <span class="note">預先下載模型：</span>
+    <span id="model-dl-btns" class="btn-row" style="margin:0;gap:6px;"></span>
     <span id="model-dl-note" class="note"></span>
   </div>
 
@@ -583,7 +584,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=62"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=63"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -1363,7 +1364,7 @@ async function capturePhoto() {
 // Worker 內用 jsDelivr +esm 版本，避免 Worker 沒有 import map 的問題
 const OCR_QUALITY_INFO = {
   tiny: { label: '快速', size: '6MB' },
-  small: { label: '標準', size: '30MB' },
+  small: { label: '標準', size: '31MB' },
   medium: { label: '高精度', size: '139MB' },
 };
 let ocrQuality = 'small';
@@ -1445,7 +1446,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v62';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v63';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1609,21 +1610,19 @@ async function missingModels(q, withExtra = false) {
   return urls.filter((u, i) => !hits[i]);
 }
 async function checkModels() {
-  const btn = document.getElementById('model-dl-btn'), note = document.getElementById('model-dl-note');
-  if (!btn || !self.caches) return;
-  const missing = await missingModels(ocrQuality);
-  btn.hidden = !missing.length;
-  note.textContent = missing.length
-    ? `${OCR_QUALITY_INFO[ocrQuality].label}模型尚未下載（約 ${OCR_QUALITY_INFO[ocrQuality].size}），第一次辨識會比較久`
-    : `✓ ${OCR_QUALITY_INFO[ocrQuality].label}模型已下載，可離線辨識`;
+  const box = document.getElementById('model-dl-btns');
+  if (!box || !self.caches) return;
+  const states = await Promise.all(Object.keys(OCR_QUALITY_INFO).map(async q => [q, !(await missingModels(q)).length]));
+  box.innerHTML = states.map(([q, ok]) => `<button class="btn btn-ghost btn-sm" data-q="${q}" onclick="downloadModels('${q}', this)"${ok ? ' disabled' : ''}>`
+    + `${ok ? '✓' : '⬇'} ${OCR_QUALITY_INFO[q].label} ${OCR_QUALITY_INFO[q].size}</button>`).join('');
 }
-async function downloadModels() {
-  const btn = document.getElementById('model-dl-btn'), note = document.getElementById('model-dl-note');
+async function downloadModels(q, btn) {
+  const note = document.getElementById('model-dl-note');
   btn.disabled = true;
   navigator.storage?.persist?.();   // 請瀏覽器別在空間不足時自動清掉模型
   try {
     const cache = await caches.open('pic-calc-models');
-    const urls = await missingModels(ocrQuality, true);
+    const urls = await missingModels(q, true);
     // ponytail: 不顯示總量。GitHub Pages 用 gzip 傳，content-length 是壓縮後大小，
     // 讀到的卻是解壓後位元組，兩者對不上（標準：傳 37.8MB、解開 44MB）
     let done = 0;
@@ -1635,18 +1634,16 @@ async function downloadModels() {
         const { done: end, value } = await reader.read();
         if (end) break;
         chunks.push(value); done += value.length;
-        note.textContent = `下載中…第 ${i + 1}／${urls.length} 個檔，已 ${(done / 1e6).toFixed(1)} MB`;
+        note.textContent = `${OCR_QUALITY_INFO[q].label}下載中…第 ${i + 1}／${urls.length} 個檔，已 ${(done / 1e6).toFixed(1)} MB`;
       }
       // 自己存並等它存完：SW 的背景存檔在手機上失敗也不會報錯，畫面就一直顯示「尚未下載」
       try { await cache.put(u, new Response(new Blob(chunks))); }
       catch (e) { throw new Error(`存檔失敗：${e.name || ''} ${e.message || e}。請清出手機空間，或改用「快速」精度`); }
     }
+    note.textContent = `✓ ${OCR_QUALITY_INFO[q].label}模型已下載，可離線辨識`;
   } catch (err) {
     note.textContent = String(err.message).startsWith('存檔失敗') ? `❌ ${err.message}` : `❌ 下載失敗（${err.message || err}），請換個網路再按一次`;
-    btn.disabled = false;
-    return;
   }
-  btn.disabled = false;
   checkModels();
 }
 
