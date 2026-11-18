@@ -3,6 +3,9 @@
 用手機拍一張中文表格，自動辨識成表格後做加總驗算（橫向欄／縱向列），
 找出「合計對不上」的格子。
 
+另有「📝 文字金額」模式：拍一段審查意見等文字（最多一頁 A4），抓出每筆「…元」金額，
+點選要加／減的項目後即時加總（規則取自 budget-opinion-reviewer 的文字金額萃取，刻意只做精簡版）。
+
 - 線上版：<https://cormort.github.io/pic-calculator/>
 - 技術與維護說明：[`pic-calculator/開發及維護說明.md`](pic-calculator/開發及維護說明.md)
 

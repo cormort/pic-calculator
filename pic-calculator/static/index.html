@@ -527,7 +527,9 @@
           同一個角色再點一次就取消；選錯直接點對的角色即可。選到的欄／列會列在托盤上，<strong>點 chip 就能取消</strong>。<br>
           <strong>連續選取</strong>：Shift＋點可一次選一整段（手機可先在托盤選「加項」再逐欄點）。<br>
           <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。<br>
-          <strong>連續處理同格式表格</strong>：下一張會自動沿用這一張的欄／列設定（欄數、表頭相同才套用）。
+          <strong>連續處理同格式表格</strong>：下一張會自動沿用這一張的欄／列設定（欄數、表頭相同才套用）。<br>
+          <strong>🧮 點格加總</strong>：開啟後點格子切換 加 → 減 → 取消，浮動視窗即時加總（此時不能改格子，關掉即恢復）。<br>
+          <strong>📝 文字金額</strong>：頁首切到「文字金額」再載入／拍照，會抓出每筆「…元」，點 ○ 切換 ＋／－ 加總；表格內容可直接點來修正。
         </div>
         </details>
         <details class="fold" id="advanced-fold"><summary>⚙️ 進階：驗算範圍、方向、低信心門檻</summary>
@@ -624,7 +626,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=72"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=73"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -1500,7 +1502,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v72';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v73';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
