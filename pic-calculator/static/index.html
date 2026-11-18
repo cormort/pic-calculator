@@ -461,13 +461,12 @@
       <p class="note">辨識出的文字（可直接修改，表格會跟著重算）：</p>
       <textarea id="text-input" rows="8" style="width:100%; box-sizing:border-box; font-size:15px;" oninput="renderTextAmounts()"></textarea>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-        <select id="text-title-filter" onchange="renderTextAmounts()"><option value="">全部段落</option></select>
         <input id="text-kw-filter" type="search" placeholder="關鍵字篩選（加總跟著變）" oninput="renderTextAmounts()" style="flex:1; min-width:160px;">
       </div>
       <p id="text-sum" style="font-weight:bold; margin:10px 0;"></p>
       <div style="overflow-x:auto;">
         <table class="text-amounts" style="width:100%; border-collapse:collapse;">
-          <thead><tr><th>計入</th><th>#</th><th>段落</th><th>內容</th><th style="text-align:right;">金額</th></tr></thead>
+          <thead><tr><th>計入</th><th>#</th><th>內容</th><th style="text-align:right;">金額</th></tr></thead>
           <tbody id="text-rows"></tbody>
         </table>
       </div>
@@ -1483,7 +1482,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v69';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v70';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2298,11 +2297,9 @@ function chineseMoneyParts(s) {
 
 function extractAmounts(text) {
   const items = [];
-  let title = '未分類項目';
   for (let line of text.split(/\n+/)) {
     line = line.trim();
     if (!line) continue;
-    if (/^[一二三四五六七八九十]+、/.test(line)) { title = line; if (!line.includes('元')) continue; }
     line = line.replace(/^審核意見[：:,\s]*/, '');
     for (let sentence of line.split(/(?<=[。；])/)) {
       sentence = sentence.trim().replace(/^[,，]/, '').trim();
@@ -2314,7 +2311,7 @@ function extractAmounts(text) {
         const clean = toHalfWidth(seg).replace(/[,，\s]/g, '');
         const m = clean.match(/([0-9.兆億萬千仟百佰拾]+)元/);
         const v = m && /[0-9]/.test(m[1]) ? chineseMoneyParts(m[1]) : 0;
-        items.push({ title, text: seg, value: v > 0 ? v : null });
+        items.push({ text: seg, value: v > 0 ? v : null });
       }
     }
   }
@@ -2326,19 +2323,12 @@ function renderTextAmounts() {
   textItems = extractAmounts(document.getElementById('text-input').value);
   // 預設都不計：段落裡的金額常是比較基準（較…預算數 X 元），由使用者點選要加減哪些
   textSigns = textItems.map((it, i) => textSigns[i] ?? 0);
-  // 段落選單：重建選項但保留目前選擇（文字改了段落可能消失，就回到全部）
-  const sel = document.getElementById('text-title-filter');
-  const titles = [...new Set(textItems.map(it => it.title))];
-  const picked = titles.includes(sel.value) ? sel.value : '';
-  sel.innerHTML = '<option value="">全部段落</option>' + titles.map(t => `<option>${escapeHtml(t)}</option>`).join('');
-  sel.value = picked;
   const kw = document.getElementById('text-kw-filter').value.trim().toLowerCase();
-  const shown = textItems.map((it, i) => i).filter(i => (!picked || textItems[i].title === picked)
-    && (!kw || (textItems[i].text + textItems[i].title).toLowerCase().includes(kw)));
+  const shown = textItems.map((it, i) => i).filter(i => !kw || textItems[i].text.toLowerCase().includes(kw));
   const signTxt = { 1: '＋', '-1': '－', 0: '○' };
   document.getElementById('text-rows').innerHTML = shown.map(i => { const it = textItems[i]; return `<tr>
     <td><button class="btn btn-outline btn-sm" onclick="cycleTextSign(${i})" title="點擊切換：加 → 減 → 不計">${signTxt[textSigns[i]]}</button></td>
-    <td>${i + 1}</td><td>${escapeHtml(it.title)}</td>
+    <td>${i + 1}</td>
     <td>${escapeHtml(it.text).replace(/元/g, '<mark>元</mark>')}</td>
     <td style="text-align:right; white-space:nowrap;">${it.value === null ? '⚠️ 無法解析' : fmtNum(it.value)}</td></tr>`; }).join('');
   const sum = shown.reduce((a, i) => a + (textItems[i].value || 0) * textSigns[i], 0);
