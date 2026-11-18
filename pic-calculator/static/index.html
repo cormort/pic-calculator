@@ -366,6 +366,7 @@
     <button class="seg" data-mode="table" onclick="setAppMode('table')">📊 表格驗算</button>
     <button class="seg" data-mode="text" onclick="setAppMode('text')">📝 文字金額</button>
   </div>
+  <p class="note" id="text-tip" style="display:none; text-align:center; margin:0 0 8px;">💡 建議一次拍約半頁 A4，字太小容易讀錯</p>
   <div class="btn-row">
     <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案</button>
     <label for="capture-input" class="btn btn-outline" id="camera-btn" onclick="toggleCamera(event)">📷 拍照</label>
@@ -626,7 +627,7 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=73"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=74"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
 <script>
 /* =============================================================
    驗算邏輯 (移植自 excel-validator/js/validator.js)
@@ -978,6 +979,7 @@ function setAppMode(m) {
   try { localStorage.setItem('pcAppMode', m); } catch (e) {}
   document.querySelectorAll('#mode-row .seg').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   document.getElementById('analyze-btn').textContent = m === 'text' ? '📝 辨識文字萃取金額' : '🔍 辨識表格';
+  document.getElementById('text-tip').style.display = m === 'text' ? 'block' : 'none';
   // 另一種模式的結果收起來，免得看錯
   if (m === 'text') document.getElementById('workspace').style.display = 'none';
   else document.getElementById('text-card').style.display = 'none';
@@ -1502,7 +1504,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v73';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v74';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
