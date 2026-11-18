@@ -436,6 +436,22 @@
     </div>
     <div class="btn-row" style="margin-top:12px;">
       <button class="btn" id="analyze-btn" onclick="analyzeImage()">🔍 辨識表格</button>
+      <button class="btn btn-outline" id="text-btn" onclick="analyzeText()" title="審查意見等一般文字：抓出每筆「…元」金額列表加總">📝 辨識文字萃取金額</button>
+    </div>
+  </div>
+
+  <!-- 文字金額萃取（規則沿用 budget-opinion-reviewer 的「文字金額萃取」） -->
+  <div class="card" id="text-card" style="display:none;">
+    <div class="card-body">
+      <p class="note">辨識出的文字（可直接修改，表格會跟著重算）：</p>
+      <textarea id="text-input" rows="8" style="width:100%; box-sizing:border-box; font-size:15px;" oninput="renderTextAmounts()"></textarea>
+      <p id="text-sum" style="font-weight:bold; margin:10px 0;"></p>
+      <div style="overflow-x:auto;">
+        <table class="text-amounts" style="width:100%; border-collapse:collapse;">
+          <thead><tr><th>計入</th><th>#</th><th>段落</th><th>內容</th><th style="text-align:right;">金額</th></tr></thead>
+          <tbody id="text-rows"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -1447,7 +1463,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v64';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v65';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1561,12 +1577,12 @@ async function detectTableInWorker(file) {
 let lastStructure = null;   // 沒有格線時，表格結構模型算出來的格子
 let cellSpans = [];         // 每格的合併資訊 { rs, cs }；被合併蓋住的格子為 null（只有結構模式會有）
 
-async function ocrWords(file, quad) {
+async function ocrWords(file, quad, textOnly = false) {
   const info = OCR_QUALITY_INFO[ocrQuality];
   const text = document.getElementById('spinner-text');
   text.textContent = `載入${info.label}模型（首次約 ${info.size}）…`;
   const buffer = await file.arrayBuffer();
-  const msg = await workerRequest({ type: 'ocr', quality: ocrQuality, buffer, quad }, [buffer]);
+  const msg = await workerRequest({ type: 'ocr', quality: ocrQuality, buffer, quad, textOnly }, [buffer]);
   ocrConfidence = msg.confidence;
   ocrGrid = msg.grid || null;
   lastStructure = msg.structure || null;   // 沒有格線時，worker 會用表格結構模型給格子
@@ -2102,6 +2118,7 @@ async function analyzeImage() {
   const ws = document.getElementById('workspace');
   const qualityEl = document.getElementById('ocr-quality');
   ws.style.display = 'none';
+  document.getElementById('text-card').style.display = 'none';
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
   if (qualityEl) qualityEl.disabled = true;
@@ -2230,6 +2247,96 @@ async function analyzeImage() {
       // 直接跳到結果。原本的平滑捲動在版面剛變動時會被瀏覽器取消，結果留在畫面外沒人看到
       ws.scrollIntoView({ block: 'start' });
     }
+  }
+}
+
+/* ---------- 文字模式：拍審查意見 → OCR 全文 → 萃取「…元」金額 → 加總 ----------
+   萃取規則照搬 budget-opinion-reviewer 的 TextExtractor（逐句、每個「元」切一段）。 */
+function wordsToText(words) {
+  // 依 y 中心把字框分行（與上一框高度重疊過半就算同一行），行內由左到右
+  const sorted = [...words].sort((a, b) => a.cy - b.cy);
+  const lines = [];
+  for (const w of sorted) {
+    const line = lines[lines.length - 1];
+    if (line && Math.abs(w.cy - line.cy) < Math.min(w.h, line.h) * 0.5) { line.ws.push(w); }
+    else lines.push({ cy: w.cy, h: w.h, ws: [w] });
+  }
+  return lines.map(l => l.ws.sort((a, b) => a.x1 - b.x1).map(w => w.text).join('')).join('\n');
+}
+
+function chineseMoneyParts(s) {
+  const unit = { 兆: 1e12, 億: 1e8, 萬: 1e4, 千: 1e3, 仟: 1e3, 百: 100, 佰: 100, 拾: 10 };
+  let total = 0;
+  for (const m of s.matchAll(/([\d.]+)([兆億萬千仟百佰拾])?/g)) total += parseFloat(m[1]) * (unit[m[2]] || 1);
+  return total;
+}
+
+function extractAmounts(text) {
+  const items = [];
+  let title = '未分類項目';
+  for (let line of text.split(/\n+/)) {
+    line = line.trim();
+    if (!line) continue;
+    if (/^[一二三四五六七八九十]+、/.test(line)) { title = line; if (!line.includes('元')) continue; }
+    line = line.replace(/^審核意見[：:,\s]*/, '');
+    for (let sentence of line.split(/(?<=[。；])/)) {
+      sentence = sentence.trim().replace(/^[,，]/, '').trim();
+      if (!sentence.includes('元')) continue;
+      const parts = sentence.split('元');
+      const segs = parts.slice(0, -1).map(p => p + '元');
+      if (parts[parts.length - 1].trim()) segs[segs.length - 1] += parts[parts.length - 1];
+      for (const seg of segs) {
+        const clean = toHalfWidth(seg).replace(/[,，\s]/g, '');
+        const m = clean.match(/([0-9.兆億萬千仟百佰拾]+)元/);
+        const v = m && /[0-9]/.test(m[1]) ? chineseMoneyParts(m[1]) : 0;
+        items.push({ title, text: seg, value: v > 0 ? v : null });
+      }
+    }
+  }
+  return items;
+}
+
+let textItems = [], textSigns = [];   // textSigns[i]: 1 加、-1 減、0 不計
+function renderTextAmounts() {
+  textItems = extractAmounts(document.getElementById('text-input').value);
+  textSigns = textItems.map((it, i) => textSigns[i] ?? (it.value === null ? 0 : 1));
+  const signTxt = { 1: '＋', '-1': '－', 0: '○' };
+  document.getElementById('text-rows').innerHTML = textItems.map((it, i) => `<tr>
+    <td><button class="btn btn-outline btn-sm" onclick="cycleTextSign(${i})" title="點擊切換：加 → 減 → 不計">${signTxt[textSigns[i]]}</button></td>
+    <td>${i + 1}</td><td>${escapeHtml(it.title)}</td>
+    <td>${escapeHtml(it.text).replace(/元/g, '<mark>元</mark>')}</td>
+    <td style="text-align:right; white-space:nowrap;">${it.value === null ? '⚠️ 無法解析' : fmtNum(it.value)}</td></tr>`).join('');
+  const sum = textItems.reduce((a, it, i) => a + (it.value || 0) * textSigns[i], 0);
+  document.getElementById('text-sum').textContent =
+    `共 ${textItems.length} 筆，計入 ${textSigns.filter(s => s).length} 筆，合計 ${fmtNum(sum)} 元`;
+}
+function cycleTextSign(i) {
+  textSigns[i] = textSigns[i] === 1 ? -1 : textSigns[i] === -1 ? 0 : 1;
+  renderTextAmounts();
+}
+
+async function analyzeText() {
+  if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
+  if (analyzing) return;
+  analyzing = true;
+  const spinner = document.getElementById('spinner');
+  spinner.style.display = 'flex';
+  try {
+    const words = pendingText && useTextLayer
+      ? filterWordsByQuad(pendingText.words, quad, pendingText.size)
+      : await ocrWords(currentFile, quad, true);
+    document.getElementById('text-input').value = wordsToText(words);
+    textSigns = [];
+    renderTextAmounts();
+    const card = document.getElementById('text-card');
+    document.getElementById('workspace').style.display = 'none';   // 兩種結果不同時出現
+    card.style.display = 'block';
+    card.scrollIntoView({ block: 'start' });
+  } catch (err) {
+    alert('文字辨識失敗：' + err.message);
+  } finally {
+    analyzing = false;
+    spinner.style.display = 'none';
   }
 }
 

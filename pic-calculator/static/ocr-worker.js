@@ -1245,7 +1245,7 @@ async function handleMessage(event) {
     // 內部格線太少＝沒有欄界可用 → 交給表格結構模型決定格子（用已映射好的字框）
     let structure = null, structErr = null;
     const weakGrid = (grid?.v?.length || 0) < 3 || (grid?.h?.length || 0) < 3;
-    if (weakGrid) {
+    if (weakGrid && !msg.textOnly) {   // 文字模式不需要格子
       try { structure = await structureTable(canvas, results); } catch (err) { structErr = String(err?.message || err); }
     }
     self.postMessage({ type: 'result', id, confidence, results, grid, structure, structErr, preview, previewScale,
