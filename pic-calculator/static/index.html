@@ -1483,7 +1483,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v68';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v69';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2283,7 +2283,10 @@ function wordsToText(words) {
     if (line && Math.abs(w.cy - line.cy) < Math.min(w.h, line.h) * 0.5) { line.ws.push(w); }
     else lines.push({ cy: w.cy, h: w.h, ws: [w] });
   }
-  return lines.map(l => l.ws.sort((a, b) => a.x1 - b.x1).map(w => w.text).join('')).join('\n');
+  // 整段接起來不換行：段落折行常把金額切成兩半（「1,430」｜「萬3千元」）
+  return lines.map(l => l.ws.sort((a, b) => a.x1 - b.x1).map(w => w.text).join('')).join('')
+    // OCR 常把千分位逗號讀成點：「5.431萬」→「5,431萬」（點後剛好 3 位且接單位才改，1.22% 不動）
+    .replace(/(\d)\.(\d{3})(?=[萬億兆千仟元])/g, '$1,$2');
 }
 
 function chineseMoneyParts(s) {
@@ -2321,7 +2324,8 @@ function extractAmounts(text) {
 let textItems = [], textSigns = [];   // textSigns[i]: 1 加、-1 減、0 不計
 function renderTextAmounts() {
   textItems = extractAmounts(document.getElementById('text-input').value);
-  textSigns = textItems.map((it, i) => textSigns[i] ?? (it.value === null ? 0 : 1));
+  // 預設都不計：段落裡的金額常是比較基準（較…預算數 X 元），由使用者點選要加減哪些
+  textSigns = textItems.map((it, i) => textSigns[i] ?? 0);
   // 段落選單：重建選項但保留目前選擇（文字改了段落可能消失，就回到全部）
   const sel = document.getElementById('text-title-filter');
   const titles = [...new Set(textItems.map(it => it.title))];
@@ -2400,9 +2404,21 @@ async function analyzeText() {
   const spinner = document.getElementById('spinner');
   spinner.style.display = 'flex';
   try {
-    const words = pendingText && useTextLayer
-      ? filterWordsByQuad(pendingText.words, quad, pendingText.size)
-      : await ocrWords(currentFile, quad, true);
+    let words;
+    if (pendingText && useTextLayer) words = filterWordsByQuad(pendingText.words, quad, pendingText.size);
+    else {
+      words = await ocrWords(currentFile, quad, true);
+      // 照片拍倒了（紙放反）讀出來是亂碼：信心偏低就轉 180° 再讀一次，取信心高的
+      if (ocrConfidence < 0.85) {
+        const conf = ocrConfidence;
+        const bm = await createImageBitmap(currentFile);
+        const c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+        g.translate(bm.width, bm.height); g.rotate(Math.PI); g.drawImage(bm, 0, 0); bm.close();
+        const rotated = await c.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+        const flipped = await ocrWords(rotated, quad.map(([x, y]) => [1 - x, 1 - y]), true);
+        if (ocrConfidence > conf) words = flipped; else ocrConfidence = conf;
+      }
+    }
     document.getElementById('text-input').value = wordsToText(words);
     textSigns = [];
     renderTextAmounts();
