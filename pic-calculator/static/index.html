@@ -458,7 +458,7 @@
   <!-- 文字金額萃取（規則沿用 budget-opinion-reviewer 的「文字金額萃取」） -->
   <div class="card" id="text-card" style="display:none;">
     <div class="card-body">
-      <p class="note">辨識出的文字（可直接修改，表格會跟著重算）：</p>
+      <p class="note">辨識出的文字（可直接修改；也可以點下方表格的「內容」逐筆修正，金額會跟著重算）：</p>
       <textarea id="text-input" rows="8" style="width:100%; box-sizing:border-box; font-size:15px;" oninput="renderTextAmounts()"></textarea>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
         <input id="text-kw-filter" type="search" placeholder="關鍵字篩選（加總跟著變）" oninput="renderTextAmounts()" style="flex:1; min-width:160px;">
@@ -1482,7 +1482,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v70';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v71';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2329,7 +2329,7 @@ function renderTextAmounts() {
   document.getElementById('text-rows').innerHTML = shown.map(i => { const it = textItems[i]; return `<tr>
     <td><button class="btn btn-outline btn-sm" onclick="cycleTextSign(${i})" title="點擊切換：加 → 減 → 不計">${signTxt[textSigns[i]]}</button></td>
     <td>${i + 1}</td>
-    <td>${escapeHtml(it.text).replace(/元/g, '<mark>元</mark>')}</td>
+    <td contenteditable="true" title="點一下直接修正，離開後重算" style="cursor:text;" onblur="editTextItem(${i}, this)">${escapeHtml(it.text).replace(/元/g, '<mark>元</mark>')}</td>
     <td style="text-align:right; white-space:nowrap;">${it.value === null ? '⚠️ 無法解析' : fmtNum(it.value)}</td></tr>`; }).join('');
   const sum = shown.reduce((a, i) => a + (textItems[i].value || 0) * textSigns[i], 0);
   document.getElementById('text-sum').textContent =
@@ -2382,6 +2382,14 @@ function hideTextFloat() { floatClosed = true; updateFloat(); }
     handle.addEventListener('pointerup', () => handle.removeEventListener('pointermove', move), { once: true });
   });
 })();
+// 表格裡直接改某一筆：寫回上面的全文（替換該段第一次出現處）再重算，全文永遠是唯一的資料來源
+function editTextItem(i, td) {
+  const old = textItems[i]?.text, now = td.innerText.replace(/\n/g, '').trim();
+  if (old == null || now === old.trim()) return;
+  const ta = document.getElementById('text-input');
+  ta.value = ta.value.replace(old, now);
+  renderTextAmounts();
+}
 function cycleTextSign(i) {
   textSigns[i] = textSigns[i] === 1 ? -1 : textSigns[i] === -1 ? 0 : 1;
   renderTextAmounts();
