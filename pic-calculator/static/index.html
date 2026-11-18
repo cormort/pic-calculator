@@ -243,6 +243,9 @@
   table.data th.sel-target::after, table.data td.row-head.sel-target::after { content: "="; font-size: .95rem; color: var(--target); display: inline-block; margin-left: 3px; font-weight: 700; }
 
   /* 驗算結果 */
+  table.data.picking td { cursor: pointer; }
+  table.data td.pick-plus { outline: 3px solid #2e86de; outline-offset: -3px; }
+  table.data td.pick-minus { outline: 3px solid #e17055; outline-offset: -3px; }
   table.data td.cell-ok { background: #eafaf1; font-weight: 700; color: #1a6640; }
   table.data td.cell-error { background: #fdedec; font-weight: 700; color: var(--error); }
   /* 低信心格：左側橘線；智慧合計：綠底 */
@@ -440,6 +443,18 @@
     </div>
   </div>
 
+  <!-- 浮動加總：捲動長表格時仍看得到（所有計入的項目，不受篩選影響）；拖標題列移動 -->
+  <div id="text-float" style="display:none; position:fixed; right:16px; bottom:16px; z-index:50; min-width:200px; background:var(--card, #fff); border:2px solid var(--primary); border-radius:10px; box-shadow:0 4px 16px rgba(0,0,0,.2);">
+    <div id="text-float-handle" style="display:flex; justify-content:space-between; align-items:center; padding:4px 10px; background:var(--primary); color:#fff; cursor:move; touch-action:none; border-radius:7px 7px 0 0;">
+      <span>⠿ 加總</span><button onclick="hideTextFloat()" style="background:none; border:0; color:#fff; font-size:18px; cursor:pointer;" aria-label="關閉">×</button>
+    </div>
+    <div style="padding:8px 12px;">
+      <div id="text-float-num" style="font-size:22px; font-weight:bold;">0</div>
+      <div id="text-float-zh" style="color:var(--muted);"></div>
+      <div id="text-float-info" style="font-size:13px;"></div>
+    </div>
+  </div>
+
   <!-- 文字金額萃取（規則沿用 budget-opinion-reviewer 的「文字金額萃取」） -->
   <div class="card" id="text-card" style="display:none;">
     <div class="card-body">
@@ -545,6 +560,7 @@
         <span>📊 辨識結果 (可直接點 cell 修改)</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-warn btn-sm" id="review-btn" style="display:none" onclick="reviewLowConfidence()">🔎 待核對</button>
+          <button class="btn btn-outline btn-sm" id="pick-btn" onclick="togglePickMode()" title="開啟後點格子：加 → 減 → 取消，浮動視窗即時加總（此時不能改格子）">🧮 點格加總</button>
           <button class="btn btn-outline btn-sm" id="undo-btn" style="display:none" onclick="undoLast()" title="復原上一次格子修改（Ctrl/⌘+Z）">↩︎ 復原</button>
           <button class="btn btn-outline btn-sm" onclick="copyTable()">📋 複製表格</button>
           <button class="btn btn-outline btn-sm" onclick="exportCsv()" title="下載 CSV（UTF-8 BOM，Excel 直接開不會亂碼）">⬇️ 匯出 CSV</button>
@@ -1467,7 +1483,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v66';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v68';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -2123,6 +2139,7 @@ async function analyzeImage() {
   const qualityEl = document.getElementById('ocr-quality');
   ws.style.display = 'none';
   document.getElementById('text-card').style.display = 'none';
+  document.getElementById('text-float').style.display = 'none';
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
   if (qualityEl) qualityEl.disabled = true;
@@ -2167,6 +2184,7 @@ async function analyzeImage() {
     const stripped = stripGarbageText(repaired.data, headerRowCount());
     rememberTemplate();   // 換表之前先記下上一張的驗算設定
     tableData = stripped.data;
+    cellPicks.clear();   // 換表：上一張點選的格子不適用
     cellBoxes = built.boxes || [];   // 每格在轉正圖上的像素範圍（給原圖對照用）
     tableExact = fromTextLayer;
     cellSpans = built.spans || [];
@@ -2322,7 +2340,54 @@ function renderTextAmounts() {
   const sum = shown.reduce((a, i) => a + (textItems[i].value || 0) * textSigns[i], 0);
   document.getElementById('text-sum').textContent =
     `顯示 ${shown.length}／${textItems.length} 筆，計入 ${shown.filter(i => textSigns[i]).length} 筆，合計 ${fmtNum(sum)} 元`;
+  updateFloat();
 }
+function zhMoney(n) {   // 1234567 → 123萬4,567元；負數 → 短絀…（照搬 reviewer）
+  if (!n) return '0元';
+  let a = Math.abs(n);
+  const parts = [];
+  for (const [u, k] of [['兆', 1e12], ['億', 1e8], ['萬', 1e4]]) {
+    const q = Math.floor(a / k); a %= k;
+    if (q) parts.push(q.toLocaleString('zh-Hant') + u);
+  }
+  if (a) parts.push(a % 1000 === 0 ? a / 1000 + '千' : a.toLocaleString('zh-Hant'));
+  return (n < 0 ? '短絀' : '') + parts.join('') + '元';
+}
+let floatClosed = false;
+function updateFloat() {
+  // 顯示中的是文字結果 → 加文字項目；否則加表格裡點選的格子
+  const textOn = document.getElementById('text-card').style.display === 'block';
+  const signed = textOn
+    ? textItems.map((it, i) => (it.value || 0) * textSigns[i]).filter(v => v)
+    : [...cellPicks].map(([k, s]) => { const [r, c] = k.split(',').map(Number); return (Validator._num(tableData[r]?.[c]) || 0) * s; }).filter(v => v);
+  const total = signed.reduce((a, v) => a + v, 0);
+  document.getElementById('text-float-num').textContent = fmtNum(total);
+  document.getElementById('text-float-zh').textContent = zhMoney(total);
+  let info = `已選 ${signed.length} 個項目`;
+  // ponytail: 只處理「一正一負兩筆」這個唯一有明確意義的比例情境（同 reviewer）
+  if (signed.length === 2 && signed[0] * signed[1] < 0) {
+    info += `（差異為負數金額的 ${(total / Math.abs(Math.min(...signed)) * 100).toFixed(2)}%）`;
+  }
+  document.getElementById('text-float-info').textContent = info;
+  const tableOn = document.getElementById('workspace').style.display === 'block' && (pickMode || cellPicks.size);
+  document.getElementById('text-float').style.display = !floatClosed && (textOn || tableOn) ? 'block' : 'none';
+}
+function hideTextFloat() { floatClosed = true; updateFloat(); }
+(() => {   // 拖曳（滑鼠與觸控都走 pointer events）
+  const box = document.getElementById('text-float'), handle = document.getElementById('text-float-handle');
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.target.tagName === 'BUTTON') return;
+    const r = box.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+    handle.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      box.style.left = Math.max(0, Math.min(innerWidth - r.width, ev.clientX - dx)) + 'px';
+      box.style.top = Math.max(0, Math.min(innerHeight - r.height, ev.clientY - dy)) + 'px';
+      box.style.right = box.style.bottom = 'auto';
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', () => handle.removeEventListener('pointermove', move), { once: true });
+  });
+})();
 function cycleTextSign(i) {
   textSigns[i] = textSigns[i] === 1 ? -1 : textSigns[i] === -1 ? 0 : 1;
   renderTextAmounts();
@@ -2344,6 +2409,8 @@ async function analyzeText() {
     const card = document.getElementById('text-card');
     document.getElementById('workspace').style.display = 'none';   // 兩種結果不同時出現
     card.style.display = 'block';
+    floatClosed = false;
+    updateFloat();
     card.scrollIntoView({ block: 'start' });
   } catch (err) {
     alert('文字辨識失敗：' + err.message);
@@ -2451,7 +2518,36 @@ function renderTable() {
   }
   html += '</tbody>';
   table.innerHTML = html;
+  applyPicks();
 }
+
+/* ---------- 點格加總：與文字模式共用浮動加總視窗 ---------- */
+let pickMode = false;
+const cellPicks = new Map();   // 'r,c' → 1 加 / -1 減
+function applyPicks() {
+  const table = document.getElementById('data-table');
+  table.classList.toggle('picking', pickMode);
+  table.querySelectorAll('td[data-r]').forEach(td => {
+    const s = cellPicks.get(td.dataset.r + ',' + td.dataset.c);
+    td.classList.toggle('pick-plus', s === 1);
+    td.classList.toggle('pick-minus', s === -1);
+    td.contentEditable = pickMode ? 'false' : 'true';
+  });
+  document.getElementById('pick-btn').classList.toggle('btn-warn', pickMode);
+  updateFloat();
+}
+function togglePickMode() {
+  pickMode = !pickMode;
+  if (pickMode) floatClosed = false;
+  applyPicks();
+}
+document.getElementById('data-table').addEventListener('click', (e) => {
+  const td = e.target.closest('td[data-r]');
+  if (!pickMode || !td) return;
+  const k = td.dataset.r + ',' + td.dataset.c, s = cellPicks.get(k);
+  if (s === 1) cellPicks.set(k, -1); else if (s === -1) cellPicks.delete(k); else cellPicks.set(k, 1);
+  applyPicks();
+});
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;" }[c]));
@@ -3773,6 +3869,7 @@ function applyTable(grid, opts = {}) {
   const stripped = stripGarbageText(repaired.data, headerRowCount());
   rememberTemplate();
   tableData = stripped.data;
+  cellPicks.clear();   // 換表：上一張點選的格子不適用
   cellConfidence = tableData.map(r => r.map(() => 1));
   cellBoxes = [];
   tableExact = false;
