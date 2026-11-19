@@ -1,11 +1,11 @@
 /* 用真實瀏覽器跑完整 OCR 管線，量測 6 張中文表格測試圖的格級正確率。
  *
  * 需要 Playwright + Chromium（CI 用 `npx playwright install --with-deps chromium`）。
- * 模型（30MB／139MB）由 CDN 下載，第一次跑要等一下。
+ * 模型（6MB／30MB）由本機網域 static/models/ 載入，第一次跑要等一下。
  *
  * 用法：
- *   node bench/run_ocr.js                          # 小模型，本機 127.0.0.1:8765
- *   node bench/run_ocr.js --quality=medium         # 高精度模型
+ *   node bench/run_ocr.js                          # 標準模型，本機 127.0.0.1:8765
+ *   node bench/run_ocr.js --quality=tiny           # 快速模型
  *   node bench/run_ocr.js --base=http://127.0.0.1:8765/ --out=out/run.json
  */
 const fs = require("fs");

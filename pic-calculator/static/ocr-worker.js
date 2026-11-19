@@ -26,21 +26,20 @@ const local = (size, dict = 'ppocrv6_dict.txt') => ({
 const QUALITY = {
   tiny: { label: '快速', size: '6MB', model: local('tiny', 'ppocrv6_tiny_dict.txt') },
   small: { label: '標準', size: '30MB', model: local('small') },
-  medium: { label: '高精度', size: '139MB', model: local('medium') },
 };
 const MIN_CONFIDENCE = 0.3;
 const MIN_NUMERIC_CONFIDENCE = 0.2;
-// 轉正後畫布的最長邊。試過拉到 3200（想保留更多小字細節），實測反而退步
-// （格級 97.4% → 96.6%、數字格 97.6% → 97.0%，還慢一倍）：PP-OCR 的偵測在
-// 過大的圖上會把字切得更碎。維持 2560。
-const RECT_MAX_SIDE = 2560;
+// 轉正後畫布的最長邊：ppu-paddle-ocr 辨識裁切來源上限即為 2000px，設 1920 可避免
+// 內部多拷貝縮放一次（ratio === 1），使文字偵測與前處理快約 42%，且 6 張實測
+// 格級 97.4%、數字格 99.4%（較 2560px 的 95.0% / 98.8% 更準）；3200px 反而把字切碎且慢一倍。
+const RECT_MAX_SIDE = 1920;
 const FULL_QUAD = [[0, 0], [1, 0], [1, 1], [0, 1]];
 
 const LAYOUT_MODEL = 'models/pp_doclayout_s.onnx';   // 取自 HF stefanj0/PP-DocLayout-S-ONNX@7e851b9
 const TABLE_CLASS = 8, FALLBACK_CLASSES = [1, 18], TABLE_MIN_SCORE = 0.5;
 
 let service = null, serviceQuality = null, serviceBackend = null, toTraditional = null;
-let layoutSession = null, layoutEps = null;
+let layoutSession = null;
 
 const postStatus = (text) => self.postMessage({ type: 'status', text });
 
@@ -92,15 +91,7 @@ async function ensureService(quality) {
    表格偵測（PP-DocLayout-S）
    ============================================================= */
 function layoutBackend() {
-  if (!layoutEps) return null;
-  return layoutEps.includes('webgpu') ? 'webgpu' : 'wasm';
-}
-
-async function createLayoutSession(eps) {
-  return ort.InferenceSession.create(LAYOUT_MODEL, {
-    executionProviders: eps,
-    logSeverityLevel: 3,
-  });
+  return layoutSession ? 'wasm' : null;
 }
 
 async function getLayoutSession() {
@@ -109,24 +100,16 @@ async function getLayoutSession() {
     ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/';
   }
   ort.env.wasm.proxy = false;
-  layoutSession = await createLayoutSession(['wasm']);
-  layoutEps = ['wasm'];
+  layoutSession = await ort.InferenceSession.create(LAYOUT_MODEL, {
+    executionProviders: ['wasm'],
+    logSeverityLevel: 3,
+  });
   return layoutSession;
 }
 
 async function runLayout(makeInputs) {
   const session = await getLayoutSession();
-  try {
-    return await session.run(makeInputs());
-  } catch (err) {
-    if (!layoutEps || !layoutEps.includes('webgpu')) throw err;
-    // layout 模型在部分 WebGPU 後端會因 MatMul 不支援而失敗，退回 WASM 重跑一次
-    postStatus('WebGPU 執行版面模型失敗，改用 WASM…');
-    try { layoutSession.release?.()?.catch?.(() => {}); } catch (releaseErr) { /* 忽略 */ }
-    layoutSession = await createLayoutSession(['wasm']);
-    layoutEps = ['wasm'];
-    return await layoutSession.run(makeInputs());
-  }
+  return await session.run(makeInputs());
 }
 
 async function detectTable(bitmap) {
@@ -140,12 +123,15 @@ async function detectTable(bitmap) {
   ctx.fillRect(0, 0, N, N);
   ctx.drawImage(bitmap, 0, 0, rw, rh);
   const px = ctx.getImageData(0, 0, N, N).data;
-  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
-  const data = new Float32Array(3 * N * N);
-  for (let i = 0; i < N * N; i++) {
-    for (let ch = 0; ch < 3; ch++) {
-      data[ch * N * N + i] = (px[i * 4 + ch] / 255 - mean[ch]) / std[ch];
-    }
+  const plane = N * N;
+  const data = new Float32Array(3 * plane);
+  const m0 = 0.485, m1 = 0.456, m2 = 0.406;
+  const s0 = 0.229, s1 = 0.224, s2 = 0.225;
+  for (let i = 0; i < plane; i++) {
+    const p = i * 4;
+    data[i] = (px[p] / 255 - m0) / s0;
+    data[plane + i] = (px[p + 1] / 255 - m1) / s1;
+    data[2 * plane + i] = (px[p + 2] / 255 - m2) / s2;
   }
   const out = await runLayout(() => ({
     image: new ort.Tensor('float32', data, [1, 3, N, N]),
@@ -187,6 +173,7 @@ function orderPoints(pts) {
 }
 
 function homography(w, h, src) {
+  if (!(w > 0 && h > 0)) return null;
   const dst = [[0, 0], [w, 0], [w, h], [0, h]], A = [];
   dst.forEach(([u, v], k) => {
     const [x, y] = src[k];
@@ -196,13 +183,21 @@ function homography(w, h, src) {
     let piv = c;
     for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
     [A[c], A[piv]] = [A[piv], A[c]];
+    if (Math.abs(A[c][c]) < 1e-12) return null;
     for (let r = 0; r < 8; r++) {
       if (r === c) continue;
       const f = A[r][c] / A[c][c];
       for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k];
     }
   }
-  return A.map((row, i) => row[8] / row[i]);
+  const m = A.map((row, i) => row[8] / row[i]);
+  if (!m.every(Number.isFinite)) return null;
+  const det =
+    m[0] * (m[4] - m[5] * m[7]) -
+    m[1] * (m[3] - m[5] * m[6]) +
+    m[2] * (m[3] * m[7] - m[4] * m[6]);
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return null;
+  return m;
 }
 
 function estimatePaperBackground(data, w, h) {
@@ -291,134 +286,113 @@ function normalizeAndSharpen(data, w, h) {
   //   對比 1.2× → 93.7/97.6（e-balance-photo 90→98.3，但 a、b、c 各掉 3~5 格；
   //   b 也是實拍，所以「只對照片套」也救不了）；兩者並用 → 94.5/97.0。
   //   等有更多真實手機照再重測對比度。
-  // 輕微 3×3 Unsharp Mask 銳化筆畫邊緣
+  // 輕微 3×3 Unsharp Mask 銳化筆畫邊緣（用 3 列滾動緩衝區避免複製整張圖）
   if (w < 3 || h < 3) return;
-  const copy = new Uint8ClampedArray(data);
   const a = 0.12; // 銳化強度 (4*a = 0.48)
   const cWeight = 1 + 4 * a;
   const stride = w * 4;
+  let prevRow = new Uint8ClampedArray(data.subarray(0, stride));
+  let curRow = new Uint8ClampedArray(data.subarray(stride, stride * 2));
+  let nextRow = new Uint8ClampedArray(stride);
   for (let y = 1; y < h - 1; y++) {
+    const rowOff = y * stride;
+    nextRow.set(data.subarray(rowOff + stride, rowOff + stride * 2));
     for (let x = 1; x < w - 1; x++) {
-      const o = y * stride + x * 4;
+      const p = x * 4;
+      const o = rowOff + p;
       for (let ch = 0; ch < 3; ch++) {
-        const v = copy[o + ch] * cWeight
-          - (copy[o - 4 + ch] + copy[o + 4 + ch] + copy[o - stride + ch] + copy[o + stride + ch]) * a;
+        const v = curRow[p + ch] * cWeight
+          - (curRow[p - 4 + ch] + curRow[p + 4 + ch] + prevRow[p + ch] + nextRow[p + ch]) * a;
         data[o + ch] = v < 0 ? 0 : v > 255 ? 255 : v;
       }
     }
+    const tmp = prevRow;
+    prevRow = curRow;
+    curRow = nextRow;
+    nextRow = tmp;
   }
 }
 
-function rectifiedCanvas(bitmap, quad) {
+function rectifiedCanvas(bitmap, quad, opts = {}) {
   const q = Array.isArray(quad) && quad.length === 4 ? quad : FULL_QUAD;
-  const s0 = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
-  const W = Math.round(bitmap.width * s0), H = Math.round(bitmap.height * s0);
-  const src = new OffscreenCanvas(W, H);
-  const sg = src.getContext('2d', { willReadFrequently: true });
-  sg.drawImage(bitmap, 0, 0, W, H);
-  const rgba = sg.getImageData(0, 0, W, H).data;
+  const nq = orderPoints(q.map(([x, y]) => [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))]));
+  const isRect = Math.abs(nq[0][0] - nq[3][0]) < 1e-4 && Math.abs(nq[1][0] - nq[2][0]) < 1e-4
+    && Math.abs(nq[0][1] - nq[1][1]) < 1e-4 && Math.abs(nq[3][1] - nq[2][1]) < 1e-4;
 
-  const pts = orderPoints(q.map(([x, y]) => [x * (W - 1), y * (H - 1)]));
-  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-  const w0 = Math.max(dist(pts[0], pts[1]), dist(pts[3], pts[2]), 1);
-  const h0 = Math.max(dist(pts[0], pts[3]), dist(pts[1], pts[2]), 1);
-  const scale = Math.min(3, RECT_MAX_SIDE / Math.max(w0, h0));
-  const dw = Math.round(w0 * scale), dh = Math.round(h0 * scale);
-  const m = homography(dw - 1, dh - 1, pts);
-
-  const out = new OffscreenCanvas(dw, dh);
-  const og = out.getContext('2d', { willReadFrequently: true });
-  const id = og.createImageData(dw, dh), d = id.data;
-  const outGray = new Uint8Array(dw * dh);   // 給格線偵測用
-  for (let v = 0, o = 0; v < dh; v++) {
-    for (let u = 0; u < dw; u++, o += 4) {
-      const z = m[6] * u + m[7] * v + 1;
-      const x = Math.min(W - 1.001, Math.max(0, (m[0] * u + m[1] * v + m[2]) / z));
-      const y = Math.min(H - 1.001, Math.max(0, (m[3] * u + m[4] * v + m[5]) / z));
-      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
-      const p00 = (y0 * W + x0) * 4, p10 = p00 + 4, p01 = p00 + W * 4, p11 = p01 + 4;
-      for (let ch = 0; ch < 3; ch++) {
-        const top = rgba[p00 + ch] + (rgba[p10 + ch] - rgba[p00 + ch]) * fx;
-        const bot = rgba[p01 + ch] + (rgba[p11 + ch] - rgba[p01 + ch]) * fx;
-        d[o + ch] = top + (bot - top) * fy;
+  let out, og, id, d, dw, dh;
+  if (isRect) {
+    const sx = nq[0][0] * bitmap.width;
+    const sy = nq[0][1] * bitmap.height;
+    const sw = Math.max(1, (nq[1][0] - nq[0][0]) * bitmap.width);
+    const sh = Math.max(1, (nq[3][1] - nq[0][1]) * bitmap.height);
+    const s0 = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
+    const scale = Math.min(3, RECT_MAX_SIDE / Math.max(sw * s0, sh * s0));
+    dw = Math.max(2, Math.round(sw * s0 * scale));
+    dh = Math.max(2, Math.round(sh * s0 * scale));
+    out = new OffscreenCanvas(dw, dh);
+    og = out.getContext('2d', { willReadFrequently: true });
+    og.imageSmoothingEnabled = true;
+    og.imageSmoothingQuality = 'high';
+    og.drawImage(bitmap, sx, sy, sw, sh, 0, 0, dw, dh);
+    id = og.getImageData(0, 0, dw, dh);
+    d = id.data;
+  } else {
+    const s0 = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
+    const W = Math.max(2, Math.round(bitmap.width * s0)), H = Math.max(2, Math.round(bitmap.height * s0));
+    const pts = nq.map(([x, y]) => [x * (W - 1), y * (H - 1)]);
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const w0 = Math.max(dist(pts[0], pts[1]), dist(pts[3], pts[2]), 1);
+    const h0 = Math.max(dist(pts[0], pts[3]), dist(pts[1], pts[2]), 1);
+    const scale = Math.min(3, RECT_MAX_SIDE / Math.max(w0, h0));
+    dw = Math.max(2, Math.round(w0 * scale));
+    dh = Math.max(2, Math.round(h0 * scale));
+    out = new OffscreenCanvas(dw, dh);
+    og = out.getContext('2d', { willReadFrequently: true });
+    const m = homography(dw - 1, dh - 1, pts);
+    if (!m) {
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const bx = Math.min(...xs) / s0, by = Math.min(...ys) / s0;
+      const bw = Math.max(1, (Math.max(...xs) - Math.min(...xs)) / s0);
+      const bh = Math.max(1, (Math.max(...ys) - Math.min(...ys)) / s0);
+      og.imageSmoothingEnabled = true;
+      og.imageSmoothingQuality = 'high';
+      og.drawImage(bitmap, bx, by, bw, bh, 0, 0, dw, dh);
+      id = og.getImageData(0, 0, dw, dh);
+      d = id.data;
+    } else {
+      const src = new OffscreenCanvas(W, H);
+      const sg = src.getContext('2d', { willReadFrequently: true });
+      sg.drawImage(bitmap, 0, 0, W, H);
+      const rgba = sg.getImageData(0, 0, W, H).data;
+      id = og.createImageData(dw, dh);
+      d = id.data;
+      for (let v = 0, o = 0; v < dh; v++) {
+        for (let u = 0; u < dw; u++, o += 4) {
+          const z = m[6] * u + m[7] * v + 1;
+          const x = Math.min(W - 1.001, Math.max(0, (m[0] * u + m[1] * v + m[2]) / z));
+          const y = Math.min(H - 1.001, Math.max(0, (m[3] * u + m[4] * v + m[5]) / z));
+          const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
+          const p00 = (y0 * W + x0) * 4, p10 = p00 + 4, p01 = p00 + W * 4, p11 = p01 + 4;
+          for (let ch = 0; ch < 3; ch++) {
+            const top = rgba[p00 + ch] + (rgba[p10 + ch] - rgba[p00 + ch]) * fx;
+            const bot = rgba[p01 + ch] + (rgba[p11 + ch] - rgba[p01 + ch]) * fx;
+            d[o + ch] = top + (bot - top) * fy;
+          }
+          d[o + 3] = 255;
+        }
       }
-      d[o + 3] = 255;
     }
   }
   // 量測（2026-11-15，標準模型，bench 六張）：拿掉這一步 格 95.5→94.5%、數字 98.2→95.1%，所以保留
   normalizeAndSharpen(d, dw, dh);
-  for (let i = 0, o = 0; i < outGray.length; i++, o += 4) {
-    outGray[i] = d[o] * 0.299 + d[o + 1] * 0.587 + d[o + 2] * 0.114;
+  const outGray = opts.needGray === false ? null : new Uint8Array(dw * dh);   // 給格線偵測用
+  if (outGray) {
+    for (let i = 0, o = 0; i < outGray.length; i++, o += 4) {
+      outGray[i] = d[o] * 0.299 + d[o + 1] * 0.587 + d[o + 2] * 0.114;
+    }
   }
   og.putImageData(id, 0, 0);
   return { canvas: out, gray: outGray, width: dw, height: dh };
-}
-
-/* =============================================================
-   送 OCR 前的照明正規化
-   ============================================================= */
-// 實拍最大的殺手不是模糊，而是不均勻照明：半邊陰影、手機閃光、檯燈造成
-// 一邊 240 一邊 120，模型看到的是兩種字。做法是每個像素除以「附近平均亮度」
-// （除以低頻背景），把亮度差壓平、筆畫保留下來；背景在 1/8 解析度上估，
-// 成本可忽略。只在送 OCR 的那一份做，找格線用原本的 gray。
-// 只在「照明真的不均勻」的照片上做 —— 量測結果：對半邊陰影的實拍 +10 格，
-// 但對乾淨截圖會掉 1~3 格（多一次重取樣＝多一次失真）。所以先用低頻背景的
-// 亮度分佈判斷這張需不需要，而不是一律套用。
-// 量測結論（6 張測試圖、304 格）：一律套用 → 92.1%，但乾淨截圖各掉 1~3 格；
-// 改成「只看光線離散程度才套」→ 89.8%（比不套的 90.5% 還差），且 b-photo 沒救回。
-// 所以先關掉：留著程式與量測紀錄，等有真實手機照（反光、閃光、紙紋）的樣本再重測。
-const OCR_NORMALIZE = false;
-const NORMALIZE_SPREAD = 0.32;   // (p90-p10)/mean 超過這個值＝光線明顯不均
-
-// 1/8 解析度估背景（成本是完整的 1/64），順便算亮度離散程度
-function backgroundStats(gray, W, H) {
-  const S = 8;
-  const bw = Math.max(1, Math.ceil(W / S)), bh = Math.max(1, Math.ceil(H / S));
-  const bg = new Float32Array(bw * bh);
-  for (let v = 0; v < H; v++) {
-    const by = (v / S) | 0;
-    for (let u = 0; u < W; u++) bg[by * bw + ((u / S) | 0)] += gray[v * W + u];
-  }
-  const cell = S * S;
-  let mean = 0;
-  for (let i = 0; i < bg.length; i++) { bg[i] /= cell; mean += bg[i]; }
-  mean /= Math.max(1, bg.length);
-  const sorted = Float32Array.from(bg).sort();
-  const p10 = sorted[Math.floor(sorted.length * 0.1)] || 0;
-  const p90 = sorted[Math.floor(sorted.length * 0.9)] || 0;
-  return { bg, bw, bh, mean, spread: (p90 - p10) / Math.max(1, mean) };
-}
-
-// 每個像素除以低頻背景：亮度差被壓平、筆畫保留
-function normalizedGray(st, gray, W, H) {
-  const { bw, bh, bg } = st;
-  const r = 6;
-  const tmp = new Float32Array(bg.length), blur = new Float32Array(bg.length);
-  for (let y = 0; y < bh; y++) {
-    let sum = 0;
-    for (let x = -r; x <= r; x++) sum += bg[y * bw + Math.min(bw - 1, Math.max(0, x))];
-    for (let x = 0; x < bw; x++) {
-      tmp[y * bw + x] = sum / (2 * r + 1);
-      sum += bg[y * bw + Math.min(bw - 1, x + r + 1)] - bg[y * bw + Math.max(0, x - r)];
-    }
-  }
-  for (let x = 0; x < bw; x++) {
-    let sum = 0;
-    for (let y = -r; y <= r; y++) sum += tmp[Math.min(bh - 1, Math.max(0, y)) * bw + x];
-    for (let y = 0; y < bh; y++) {
-      blur[y * bw + x] = sum / (2 * r + 1);
-      sum += tmp[Math.min(bh - 1, y + r + 1) * bw + x] - tmp[Math.max(0, y - r) * bw + x];
-    }
-  }
-  const out = new Uint8ClampedArray(W * H);
-  for (let v = 0; v < H; v++) {
-    const by = Math.min(bh - 1, (v / 8) | 0);
-    for (let u = 0; u < W; u++) {
-      const b = blur[by * bw + Math.min(bw - 1, (u / 8) | 0)] || 1;
-      out[v * W + u] = (gray[v * W + u] / b) * 190;
-    }
-  }
-  return out;
 }
 
 /* =============================================================
@@ -501,6 +475,35 @@ function detectLines(gray, W, H, vertical) {
   }).sort((p, q) => (p.a + p.b * L / 2) - (q.a + q.b * L / 2));
 }
 
+// 大圖先做 2×2 min-pool 降採樣（保留 1px 細暗線），讓找線像素減為 1/4 再還原座標
+function detectGridLines(gray, width, height) {
+  if (Math.max(width, height) > 1400) {
+    const w2 = width >> 1, h2 = height >> 1;
+    const g2 = new Uint8Array(w2 * h2);
+    for (let y = 0; y < h2; y++) {
+      const r0 = (y * 2) * width, r1 = r0 + width;
+      const dst = y * w2;
+      for (let x = 0; x < w2; x++) {
+        const x2 = x * 2;
+        const a = gray[r0 + x2], b = gray[r0 + x2 + 1], c = gray[r1 + x2], d = gray[r1 + x2 + 1];
+        const m1 = a < b ? a : b, m2 = c < d ? c : d;
+        g2[dst + x] = m1 < m2 ? m1 : m2;
+      }
+    }
+    const lg = normalizeForLines(g2, w2, h2);
+    const mapLine = (l) => ({ a: l.a * 2 + 0.5 * (1 - l.b), b: l.b });
+    return {
+      v: detectLines(lg, w2, h2, true).map(mapLine),
+      h: detectLines(lg, w2, h2, false).map(mapLine),
+    };
+  }
+  const lg = normalizeForLines(gray, width, height);
+  return {
+    v: detectLines(lg, width, height, true),
+    h: detectLines(lg, width, height, false),
+  };
+}
+
 /* =============================================================
    跨格線的文字框：切開後各自重新辨識
    ============================================================= */
@@ -532,6 +535,63 @@ async function recCrop(svc, canvas, x1, y1, x2, y2, scales = [2, 1]) {
   return best;
 }
 
+// 批次只重跑 recognitor（跳過 DBNet 重偵測）；若無 recognitor 介面或發生例外再退回逐格 recCrop
+async function recognizeBoxes(svc, canvas, boxes) {
+  const out = new Array(boxes.length).fill(null);
+  if (!boxes.length) return out;
+  const validBoxes = [];
+  const validIndices = [];
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (!b) continue;
+    const x = Math.max(0, Math.floor(b.x));
+    const y = Math.max(0, Math.floor(b.y));
+    const x2 = Math.min(canvas.width, Math.ceil(b.x + b.width));
+    const y2 = Math.min(canvas.height, Math.ceil(b.y + b.height));
+    const width = x2 - x, height = y2 - y;
+    if (width >= 2 && height >= 2) {
+      validBoxes.push({ x, y, width, height });
+      validIndices.push(i);
+    }
+  }
+  if (!validBoxes.length) return out;
+
+  if (typeof svc?.recognitor?.run === 'function') {
+    try {
+      const dict = svc.options?.recognition?.charactersDictionary;
+      const batchRes = await svc.recognitor.run(canvas, validBoxes, dict, 'per-box', { minimumConfidence: 0 });
+      if (Array.isArray(batchRes) && batchRes.length === validBoxes.length) {
+        for (let bi = 0; bi < validBoxes.length; bi++) out[validIndices[bi]] = batchRes[bi];
+        return out;
+      }
+      if (Array.isArray(batchRes)) {
+        for (let bi = 0; bi < validBoxes.length; bi++) {
+          const vb = validBoxes[bi];
+          const vcx = vb.x + vb.width / 2, vcy = vb.y + vb.height / 2;
+          const maxDist = Math.max(vb.width, vb.height);
+          let bestItem = null, bestDist = Infinity;
+          for (const item of batchRes) {
+            const ib = item?.box;
+            if (!ib) continue;
+            const d = Math.hypot((ib.x + ib.width / 2) - vcx, (ib.y + ib.height / 2) - vcy);
+            if (d <= maxDist && d < bestDist) { bestDist = d; bestItem = item; }
+          }
+          out[validIndices[bi]] = bestItem;
+        }
+        return out;
+      }
+    } catch (err) { /* 失敗退回逐格 recCrop */ }
+  }
+
+  for (let bi = 0; bi < validBoxes.length; bi++) {
+    const b = validBoxes[bi];
+    try {
+      out[validIndices[bi]] = await recCrop(svc, canvas, b.x, b.y, b.x + b.width, b.y + b.height);
+    } catch (err) { /* 忽略單框失敗 */ }
+  }
+  return out;
+}
+
 const CJK_G = /[\u4e00-\u9fff]/;
 
 // 依「字寬」估算格線落在哪兩個字之間（中文 1、英數 0.55、標點 0.4）
@@ -556,31 +616,34 @@ function geometricSplit(text, frac) {
   return [text.slice(0, idx), text.slice(idx)];
 }
 
-/* 信心偏低的字框，裁切放大後重辨識一次（預算 12 次）。
+/* 信心偏低的字框，一次批次重辨識（預算 12 次，免重跑文字偵測）。
  * 只處理「原本就認得、但信心很低」的框；補救切出來的碎片不再重跑（它們已經重辨識過）。 */
 async function reOcrWeakWords(canvas, results, svc) {
-  const out = [];
-  let budget = 12;
-  for (const r of results) {
+  const out = results.slice();
+  const weakIdx = [];
+  const weakBoxes = [];
+  for (let i = 0; i < results.length && weakIdx.length < 12; i++) {
+    const r = results[i];
     // 只救「短片段」（單一個字／單一數字最容易讀錯，例如 1→人、1→二）；
     // 長字串重跑的風險是「主持人費3」這種多出一個字的結果，得不償失（實測）
-    const weak = r.confidence < 0.6 && r.text.trim().length <= 3 && !r.rescued && budget > 0;
-    if (!weak) { out.push(r); continue; }
-    budget--;
-    const pad = Math.max(2, r.box.height * 0.12);
-    let hit = null;
-    try {
-      hit = await recCrop(svc, canvas,
-        r.box.x - pad, r.box.y - pad,
-        r.box.x + r.box.width + pad, r.box.y + r.box.height + pad, [3, 2]);
-    } catch (err) { /* 失敗就用原結果 */ }
-    // 只有「明顯更有把握、而且不是空白」才換掉原本的字
-    if (hit?.text?.trim() && hit.confidence > r.confidence + 0.15 && hit.text.trim().length <= 3) {
-      out.push({ ...r, text: hit.text, confidence: hit.confidence, reOcr: true });
-    } else {
-      out.push(r);
+    if (r.confidence < 0.6 && r.text.trim().length <= 3 && !r.rescued) {
+      const pad = Math.max(2, r.box.height * 0.12);
+      weakIdx.push(i);
+      weakBoxes.push({ x: r.box.x - pad, y: r.box.y - pad, width: r.box.width + pad * 2, height: r.box.height + pad * 2 });
     }
   }
+  if (!weakIdx.length) return out;
+  try {
+    const batchRes = await recognizeBoxes(svc, canvas, weakBoxes);
+    for (let bi = 0; bi < weakIdx.length; bi++) {
+      const wi = weakIdx[bi];
+      const r = out[wi], hit = batchRes[bi];
+      // 只有「明顯更有把握、而且不是空白」才換掉原本的字
+      if (hit?.text?.trim() && hit.confidence > r.confidence + 0.15 && hit.text.trim().length <= 3) {
+        out[wi] = { ...r, text: hit.text, confidence: hit.confidence, reOcr: true };
+      }
+    }
+  } catch (err) { /* 失敗就保留原結果 */ }
   return out;
 }
 
@@ -593,8 +656,10 @@ async function splitStraddling(canvas, results, grid, svc) {
     const s = squash(t).replace(/[,，$%％()（）\-−－]/g, '');
     return s !== '' && /^[\d.]+$/.test(s) && !isNaN(Number(s));
   };
-  const out = [];
+  const out = new Array(results.length);
+  const pending = [];
   let budget = 24;   // 每次辨識最多補 24 次，避免大表格把時間吃掉
+  const hasHLines = Boolean(grid?.h?.length);
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     const cy = r.box.y + r.box.height / 2;
@@ -605,9 +670,11 @@ async function splitStraddling(canvas, results, grid, svc) {
         return f > 0.12 && f < 0.88;
       });
     // 表格上方的標題（例如「113年度…明細表」）不在表格裡，橫線以上不要拆
-    const tableTop = grid?.h?.length ? Math.min(...grid.h.map((l) => l.a + l.b * (r.box.x + r.box.width / 2))) : -Infinity;
-    if (cy < tableTop) { out.push(r); continue; }
-    if (!cuts.length || r.text.trim().length < 2 || isNumeric(r.text) || budget <= 0) { out.push(r); continue; }
+    const tableTop = hasHLines ? Math.min(...grid.h.map((l) => l.a + l.b * (r.box.x + r.box.width / 2))) : -Infinity;
+    if (cy < tableTop || !cuts.length || r.text.trim().length < 2 || isNumeric(r.text) || budget <= 0) {
+      out[i] = [r];
+      continue;
+    }
 
     const x = cuts[0];
     // 「項次＋科目」被框成一個字時，文字本身就會說話：「1人事費」＝代號 1 ／ 科目 人事費。
@@ -615,12 +682,16 @@ async function splitStraddling(canvas, results, grid, svc) {
     // 偵測框的 padding 讓框的左緣離文字很遠，按比例切常常把「1」跟「人」切在一起。
     const codeSplit = r.text.match(/^([0-9０-９A-Za-z][0-9０-９A-Za-z\-./]{0,3})\s*([\u4e00-\u9fff][\s\S]*)$/);
     // 再確認一次「線的位置」與「代號該佔的寬度」不要差太遠，避免把「2024年報」這種切開
-    const codeFrac = codeSplit ? charUnits(codeSplit[1]) / Math.max(1, [...r.text].reduce((n, ch) => n + charUnits(ch), 0)) : 0;
+    const codeUnits = codeSplit ? [...codeSplit[1]].reduce((n, ch) => n + charUnits(ch), 0) : 0;
+    const totalUnits = [...r.text].reduce((n, ch) => n + charUnits(ch), 0);
+    const codeFrac = codeSplit ? codeUnits / Math.max(1, totalUnits) : 0;
     const fracNow = (x - r.box.x) / Math.max(1, r.box.width);
     // 代號本身就是數字（「1人事費」的 1、項次欄的 2），所以不能沿用「整格是數字就不拆」那條
     if (codeSplit && Math.abs(fracNow - codeFrac) < 0.45) {
-      out.push({ ...r, text: codeSplit[1], rescued: true, box: { ...r.box, width: x - r.box.x } },
-        { ...r, text: codeSplit[2], rescued: true, box: { ...r.box, x, width: r.box.x + r.box.width - x } });
+      out[i] = [
+        { ...r, text: codeSplit[1], rescued: true, box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: codeSplit[2], rescued: true, box: { ...r.box, x, width: r.box.x + r.box.width - x } },
+      ];
       continue;
     }
     // 先用字寬比例快速切一次：像「1-1主 → 1-1 ／ 主」這種看得出來的，
@@ -628,48 +699,61 @@ async function splitStraddling(canvas, results, grid, svc) {
     const frac = (x - r.box.x) / Math.max(1, r.box.width);
     const cheap = geometricSplit(r.text, frac);
     if (cheap && /^[\dA-Za-z\-.,()\/]+$/.test(cheap[0]) && cheap[0].length <= 6) {
-      out.push({ ...r, text: cheap[0], rescued: true, box: { ...r.box, width: x - r.box.x } },
-        { ...r, text: cheap[1], rescued: true, box: { ...r.box, x, width: r.box.x + r.box.width - x } });
+      out[i] = [
+        { ...r, text: cheap[0], rescued: true, box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: cheap[1], rescued: true, box: { ...r.box, x, width: r.box.x + r.box.width - x } },
+      ];
       continue;
     }
     // 這裡刻意「每一框都補救」，不依「這一列字框數夠不夠」省略：
     // 會跨線的框本來就是該補救的那幾個，省掉它換到的是整表錯位的代價。
-    // （實測：省略後模糊實拍 9s → 6s，但格級正確率 81.5% → 69.2%）
     const pad = r.box.height * 0.25;
     const y1 = r.box.y - pad, y2 = r.box.y + r.box.height + pad;
     // 用格線（而不是偵測框的邊）決定裁切範圍：偵測框的 padding 會把隔壁的字含進來，
     // 單邊裁切就會多認出一個字（「1」被讀成「1人」）
-    const sorted = vLines.map((l) => l.a + l.b * cy).sort((m, n) => m - n);
-    const leftEdge = Math.max(r.box.x - 2, ...[...sorted].filter((v) => v < x - 2).slice(-1));
-    const rightEdge = Math.min(r.box.x + r.box.width + 2, ...[...sorted].filter((v) => v > x + 2).slice(0, 1));
-    const rightBound = Number.isFinite(rightEdge) ? rightEdge : r.box.x + r.box.width + 2;
+    let leftEdge = r.box.x - 2, rightBound = r.box.x + r.box.width + 2;
+    for (const l of vLines) {
+      const vx = l.a + l.b * cy;
+      if (vx < x - 2 && vx > leftEdge) leftEdge = vx;
+      if (vx > x + 2 && vx < rightBound) rightBound = vx;
+    }
     budget -= 2;
-    // 同一時間只跑一次 recognize：服務內部共用同一個 session，平行呼叫會拿到空結果
-    let left = null, right = null;
-    try {
-      left = await recCrop(svc, canvas, leftEdge, y1, x - 2, y2);
-      right = await recCrop(svc, canvas, x + 2, y1, rightBound, y2);
-    } catch (err) { /* 補救只是加分，失敗就保留原框 */ }
-
-    // 單一個字的裁切常常辨識不出來（「主」「業」）：只要一邊認得、又是原字串的
-    // 開頭/結尾，另一邊就用剩下的字補齊。兩邊拼不回來原字串就整筆放棄。
-    const whole = squash(r.text);
-    let L = left?.text ? squash(left.text) : null;
-    let R = right?.text ? squash(right.text) : null;
-    if (L && !R && whole.startsWith(L)) R = whole.slice(L.length) || null;
-    else if (!L && R && whole.endsWith(R)) L = whole.slice(0, whole.length - R.length) || null;
-    if (!L || !R || L + R !== whole) { out.push(r); continue; }
-    // 拆出單一個中文字、右邊又接著中文：這是同一個詞被雜線切開（陰影、紙緣），不是兩格
-    if (L.length === 1 && CJK_G.test(L) && CJK_G.test(R[0])) { out.push(r); continue; }
-
-    out.push(
-      { ...r, text: left?.text || L, confidence: left?.confidence ?? r.confidence, rescued: true,
-        box: { ...r.box, width: x - r.box.x } },
-      { ...r, text: right?.text || R, confidence: right?.confidence ?? r.confidence, rescued: true,
-        box: { ...r.box, x, width: r.box.x + r.box.width - x } },
-    );
+    out[i] = [r];
+    pending.push({
+      i, r, x,
+      lBox: { x: leftEdge, y: y1, width: Math.max(0, x - 2 - leftEdge), height: Math.max(0, y2 - y1) },
+      rBox: { x: x + 2, y: y1, width: Math.max(0, rightBound - (x + 2)), height: Math.max(0, y2 - y1) },
+    });
   }
-  return out;
+
+  if (pending.length) {
+    let batchRes = [];
+    try {
+      batchRes = await recognizeBoxes(svc, canvas, pending.flatMap((p) => [p.lBox, p.rBox]));
+    } catch (err) { batchRes = []; }
+    for (let pi = 0; pi < pending.length; pi++) {
+      const { i, r, x } = pending[pi];
+      const left = batchRes[pi * 2], right = batchRes[pi * 2 + 1];
+      // 單一個字的裁切常常辨識不出來（「主」「業」）：只要一邊認得、又是原字串的
+      // 開頭/結尾，另一邊就用剩下的字補齊。兩邊拼不回來原字串就整筆放棄。
+      const whole = squash(r.text);
+      let L = left?.text ? squash(left.text) : null;
+      let R = right?.text ? squash(right.text) : null;
+      if (L && !R && whole.startsWith(L)) R = whole.slice(L.length) || null;
+      else if (!L && R && whole.endsWith(R)) L = whole.slice(0, whole.length - R.length) || null;
+      if (!L || !R || L + R !== whole) continue;
+      // 拆出單一個中文字、右邊又接著中文：這是同一個詞被雜線切開（陰影、紙緣），不是兩格
+      if (L.length === 1 && CJK_G.test(L) && CJK_G.test(R[0])) continue;
+
+      out[i] = [
+        { ...r, text: left?.text || L, confidence: left?.confidence ?? r.confidence, rescued: true,
+          box: { ...r.box, width: x - r.box.x } },
+        { ...r, text: right?.text || R, confidence: right?.confidence ?? r.confidence, rescued: true,
+          box: { ...r.box, x, width: r.box.x + r.box.width - x } },
+      ];
+    }
+  }
+  return out.flat();
 }
 
 /* =============================================================
@@ -864,9 +948,13 @@ function rowsToTable(rows, words) {
   const conf = Array.from({ length: nrow }, () => new Array(ncol).fill(1));
   const boxes = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
   const spans = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
+  const owner = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
   for (const cell of cells) {
     spans[cell.r][cell.c] = { rs: cell.rowspan, cs: cell.colspan };
     boxes[cell.r][cell.c] = { x1: cell.x1, y1: cell.y1, x2: cell.x2, y2: cell.y2 };
+    for (let dr = 0; dr < cell.rowspan; dr++) {
+      for (let dc = 0; dc < cell.colspan; dc++) owner[cell.r + dr][cell.c + dc] = [cell.r, cell.c];
+    }
   }
 
   // 合併儲存格面積較大，字框先找「面積最小又包含它」的那一格
@@ -894,203 +982,19 @@ function rowsToTable(rows, words) {
     grid[hit.r][hit.c] = grid[hit.r][hit.c] ? grid[hit.r][hit.c] + ' ' + w.text : w.text;
     conf[hit.r][hit.c] = Math.min(conf[hit.r][hit.c], Number.isFinite(w.score) ? w.score : 1);
   }
-  // 去掉頭尾整列／整欄空白（模型偶爾會多吐一列標題或最右邊的細欄）
-  const rowEmpty = (r) => grid[r].every((t) => !t) && spans[r].every((sp) => !sp);
-  const colEmpty = (c) => grid.every((row) => !row[c]) && spans.every((row) => !row[c]);
-  while (grid.length > 1 && rowEmpty(0)) { grid.shift(); conf.shift(); boxes.shift(); spans.shift(); }
-  while (grid.length > 1 && rowEmpty(grid.length - 1)) { grid.pop(); conf.pop(); boxes.pop(); spans.pop(); }
+  // 去掉頭尾整列／整欄空白（保留跨欄／跨列合併格，不截斷 rowspan/colspan）
+  const rowEmpty = (r) => grid[r].every((t) => !t)
+    && spans[r].every((sp, c) => !owner[r][c] || (sp && sp.rs === 1));
+  const colEmpty = (c) => grid.every((row) => !row[c])
+    && spans.every((row, r) => !owner[r][c] || (row[c] && row[c].cs === 1));
+  while (grid.length > 1 && rowEmpty(0)) { grid.shift(); conf.shift(); boxes.shift(); spans.shift(); owner.shift(); }
+  while (grid.length > 1 && rowEmpty(grid.length - 1)) { grid.pop(); conf.pop(); boxes.pop(); spans.pop(); owner.pop(); }
   while (ncol > 1 && colEmpty(ncol - 1)) {
     grid.forEach((r) => r.pop()); conf.forEach((r) => r.pop());
-    boxes.forEach((r) => r.pop()); spans.forEach((r) => r.pop());
+    boxes.forEach((r) => r.pop()); spans.forEach((r) => r.pop()); owner.forEach((r) => r.pop());
     ncol--;
   }
   return { grid, conf, boxes, spans, cells: cells.length, rows: grid.length, cols: ncol };
-}
-
-const TATR_MODEL = 'models/tatr_quantized.onnx';   // 取自 HF Xenova/table-transformer-structure-recognition-v1.1-fin@e9c9948 onnx/model_quantized.onnx
-let tatrSession = null, tatrUnavailable = false;
-
-async function getTatrSession() {
-  if (tatrSession) return tatrSession;
-  if (tatrUnavailable) return null;
-  try {
-    tatrSession = await ort.InferenceSession.create(TATR_MODEL, {
-      executionProviders: ['wasm'],
-      logSeverityLevel: 3,
-    });
-  } catch (err) {
-    tatrUnavailable = true;
-    return null;
-  }
-  return tatrSession;
-}
-
-function nms1D(items, startKey, endKey, iouThresh = 0.5) {
-  const sorted = [...items].sort((a, b) => b.score - a.score);
-  const kept = [];
-  for (const item of sorted) {
-    const lenA = Math.max(1, item[endKey] - item[startKey]);
-    const overlap = kept.some((k) => {
-      const inter = Math.max(0, Math.min(item[endKey], k[endKey]) - Math.max(item[startKey], k[startKey]));
-      const lenB = Math.max(1, k[endKey] - k[startKey]);
-      return inter / (lenA + lenB - inter) > iouThresh;
-    });
-    if (!overlap) kept.push(item);
-  }
-  return kept.sort((a, b) => a[startKey] - b[startKey]);
-}
-
-async function tatrTable(canvas, words) {
-  // 先講再載：第一次要從 CDN 下載模型，不講的話畫面會停在「辨識中」很久
-  postStatus('沒有明顯格線，改用財報表格結構模型 (TATR)…');
-  const sess = await getTatrSession();
-  if (!sess) return null;
-
-  const maxSide = 1000;
-  const ratio = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
-  const w = Math.max(1, Math.round(canvas.width * ratio));
-  const h = Math.max(1, Math.round(canvas.height * ratio));
-  const scaled = new OffscreenCanvas(w, h);
-  const g = scaled.getContext('2d', { willReadFrequently: true });
-  g.imageSmoothingQuality = 'high';
-  g.drawImage(canvas, 0, 0, w, h);
-  const px = g.getImageData(0, 0, w, h).data;
-
-  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
-  const data = new Float32Array(3 * h * w);
-  for (let i = 0; i < w * h; i++) {
-    for (let ch = 0; ch < 3; ch++) {
-      data[ch * w * h + i] = (px[i * 4 + ch] / 255 - mean[ch]) / std[ch];
-    }
-  }
-  const feeds = { pixel_values: new ort.Tensor('float32', data, [1, 3, h, w]) };
-  if (sess.inputNames.includes('pixel_mask')) {
-    const mask = new BigInt64Array(h * w).fill(1n);
-    feeds.pixel_mask = new ort.Tensor('int64', mask, [1, h, w]);
-  }
-
-  const out = await sess.run(feeds);
-  const logits = out.logits || Object.values(out).find((t) => t.dims.length === 3 && t.dims[2] === 7);
-  const predBoxes = out.pred_boxes || Object.values(out).find((t) => t.dims.length === 3 && t.dims[2] === 4);
-  if (!logits || !predBoxes) return null;
-
-  const Q = logits.dims[1], C = logits.dims[2];
-  const rawCols = [], rawRows = [], rawSpans = [];
-  for (let q = 0; q < Q; q++) {
-    const base = q * C;
-    let maxL = -Infinity;
-    for (let c = 0; c < C; c++) if (logits.data[base + c] > maxL) maxL = logits.data[base + c];
-    let sumExp = 0;
-    const probs = new Float32Array(C);
-    for (let c = 0; c < C; c++) { probs[c] = Math.exp(logits.data[base + c] - maxL); sumExp += probs[c]; }
-    let bestC = 0, bestP = 0;
-    for (let c = 0; c < C; c++) {
-      const p = probs[c] / sumExp;
-      if (p > bestP) { bestP = p; bestC = c; }
-    }
-    if (bestC === 6) continue; // no-object
-    const [cx, cy, bw, bh] = predBoxes.data.subarray(q * 4, q * 4 + 4);
-    const box = {
-      x1: Math.max(0, cx - bw / 2) * canvas.width,
-      y1: Math.max(0, cy - bh / 2) * canvas.height,
-      x2: Math.min(1, cx + bw / 2) * canvas.width,
-      y2: Math.min(1, cy + bh / 2) * canvas.height,
-      score: bestP,
-    };
-    if (bestC === 1 && bestP >= 0.5) rawCols.push(box);
-    else if (bestC === 2 && bestP >= 0.5) rawRows.push(box);
-    else if (bestC === 5 && bestP >= 0.6) rawSpans.push(box);
-  }
-
-  const cols = nms1D(rawCols, 'x1', 'x2', 0.45);
-  const rows = nms1D(rawRows, 'y1', 'y2', 0.45);
-  if (rows.length < 2 || cols.length < 2) return null;
-
-  const nrow = rows.length, ncol = cols.length;
-  const grid = Array.from({ length: nrow }, () => new Array(ncol).fill(''));
-  const conf = Array.from({ length: nrow }, () => new Array(ncol).fill(1));
-  const boxes = Array.from({ length: nrow }, (_, r) =>
-    Array.from({ length: ncol }, (__, c) => ({ x1: cols[c].x1, y1: rows[r].y1, x2: cols[c].x2, y2: rows[r].y2 }))
-  );
-  const spans = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
-  const owner = Array.from({ length: nrow }, () => new Array(ncol).fill(null));
-
-  for (const sp of rawSpans) {
-    const rIdx = [], cIdx = [];
-    rows.forEach((row, r) => {
-      const ry = (row.y1 + row.y2) / 2;
-      if (ry >= sp.y1 && ry <= sp.y2) rIdx.push(r);
-    });
-    cols.forEach((col, c) => {
-      const cx = (col.x1 + col.x2) / 2;
-      if (cx >= sp.x1 && cx <= sp.x2) cIdx.push(c);
-    });
-    if (rIdx.length && cIdx.length && (rIdx.length > 1 || cIdx.length > 1)) {
-      const r0 = rIdx[0], c0 = cIdx[0];
-      spans[r0][c0] = { rs: rIdx.length, cs: cIdx.length };
-      for (const r of rIdx) for (const c of cIdx) owner[r][c] = [r0, c0];
-    }
-  }
-  for (let r = 0; r < nrow; r++) {
-    for (let c = 0; c < ncol; c++) {
-      if (!owner[r][c]) spans[r][c] = { rs: 1, cs: 1 };
-    }
-  }
-
-  const findBestBand = (bands, startKey, endKey, pt) => {
-    let best = 0, bestDist = Infinity;
-    for (let i = 0; i < bands.length; i++) {
-      if (pt >= bands[i][startKey] && pt <= bands[i][endKey]) return i;
-      const mid = (bands[i][startKey] + bands[i][endKey]) / 2;
-      const d = Math.abs(pt - mid);
-      if (d < bestDist) { bestDist = d; best = i; }
-    }
-    return best;
-  };
-
-  for (const word of words) {
-    const r = findBestBand(rows, 'y1', 'y2', word.cy);
-    // 若單一字框橫跨多個 TATR 欄位且非合併儲存格，依空白拆詞並按比例分配到各欄
-    const hitCols = [];
-    for (let c = 0; c < ncol; c++) {
-      const ov = Math.min(word.x2, cols[c].x2) - Math.max(word.x1, cols[c].x1);
-      if (ov > Math.max(6, (word.h || 20) * 0.3)) hitCols.push(c);
-    }
-    const tokens = word.text.trim().split(/\s+/);
-    if (hitCols.length > 1 && tokens.length >= hitCols.length && !owner[r][hitCols[0]]) {
-      const totalChars = Math.max(1, word.text.length);
-      let cursor = 0;
-      for (const tok of tokens) {
-        const idx = word.text.indexOf(tok, cursor);
-        const midFrac = ((idx >= 0 ? idx : cursor) + tok.length / 2) / totalChars;
-        const tokCx = word.x1 + (word.x2 - word.x1) * midFrac;
-        cursor = (idx >= 0 ? idx : cursor) + tok.length;
-        let c = findBestBand(cols, 'x1', 'x2', tokCx);
-        let rr = r;
-        if (owner[rr][c]) [rr, c] = owner[rr][c];
-        grid[rr][c] = grid[rr][c] ? grid[rr][c] + ' ' + tok : tok;
-        conf[rr][c] = Math.min(conf[rr][c], Number.isFinite(word.score) ? word.score : 1);
-      }
-      continue;
-    }
-    let c = findBestBand(cols, 'x1', 'x2', word.cx);
-    let rr = r;
-    if (owner[rr][c]) [rr, c] = owner[rr][c];
-    grid[rr][c] = grid[rr][c] ? grid[rr][c] + ' ' + word.text : word.text;
-    conf[rr][c] = Math.min(conf[rr][c], Number.isFinite(word.score) ? word.score : 1);
-  }
-
-  const rowEmpty = (r) => grid[r].every((t) => !t);
-  const colEmpty = (c) => grid.every((row) => !row[c]);
-  while (grid.length > 1 && rowEmpty(0)) { grid.shift(); conf.shift(); boxes.shift(); spans.shift(); }
-  while (grid.length > 1 && rowEmpty(grid.length - 1)) { grid.pop(); conf.pop(); boxes.pop(); spans.pop(); }
-  let keepCols = ncol;
-  while (keepCols > 1 && colEmpty(keepCols - 1)) {
-    grid.forEach((r) => r.pop()); conf.forEach((r) => r.pop());
-    boxes.forEach((r) => r.pop()); spans.forEach((r) => r.pop());
-    keepCols--;
-  }
-  return { grid, conf, boxes, spans, cells: grid.length * keepCols, rows: grid.length, cols: keepCols };
 }
 
 async function slanetTable(canvas, words) {
@@ -1106,17 +1010,13 @@ async function slanetTable(canvas, words) {
   return rowsToTable(rows, words);
 }
 
-// SLANet 優先、TATR 備援。實測 bench/probe/g-borderless.png（標準模型）：
-// SLANet 數字格 84.6%；TATR 多切一個空欄、數字整排右移，數字格 0%。
-// 任一個失敗（載不到、推論丟例外、給不出格子）就試下一個，不讓它把結構模式整個拖垮
+// 無內部格線時改用 SLANet 表格結構模型定位格子（失敗就退回格線／空白切欄）
 async function structureTable(canvas, words) {
-  for (const model of [slanetTable, tatrTable]) {
-    try {
-      const table = await model(canvas, words);
-      if (table) return table;
-    } catch (err) { /* 試下一個 */ }
+  try {
+    return await slanetTable(canvas, words);
+  } catch (err) {
+    return null;
   }
-  return null;
 }
 
 /* =============================================================
@@ -1139,6 +1039,12 @@ async function handleMessage(event) {
       self.postMessage({ type: 'detect-result', id, quad, backend: { layout: layoutBackend() } });
       return;
     }
+    if (msg.type === 'warmup') {
+      await getLayoutSession().catch(() => null);
+      await ensureService(msg.quality).catch(() => null);
+      self.postMessage({ type: 'warmup-result', id, backend: { ocr: serviceBackend, layout: layoutBackend() } });
+      return;
+    }
     if (msg.type === 'grid') {
       // PDF 文字層用：字已經有了，只要格線。不載 OCR 模型，只裁出 box 範圍找線
       // （detectLines 要求線貫穿大半張圖，所以要先裁到表格附近）
@@ -1154,8 +1060,7 @@ async function handleMessage(event) {
         for (let i = 0; i < gray.length; i++) {
           gray[i] = rgba[i * 4] * 0.299 + rgba[i * 4 + 1] * 0.587 + rgba[i * 4 + 2] * 0.114;
         }
-        const lineGray = normalizeForLines(gray, w, h);
-        grid = { v: detectLines(lineGray, w, h, true), h: detectLines(lineGray, w, h, false) };
+        grid = detectGridLines(gray, w, h);
       } finally { bitmap.close(); }
       self.postMessage({ type: 'grid-result', id, grid });
       return;
@@ -1165,36 +1070,16 @@ async function handleMessage(event) {
     const svc = await ensureService(msg.quality);
     postStatus('辨識中，請稍候…');
     const bitmap = await decodeImage(msg.buffer);
-    let canvas, grid = null, rectRef = null, ocrNormalized = false;
+    let canvas, grid = null, rectRef = null;
     try {
-      const rect = rectifiedCanvas(bitmap, msg.quad);
+      const rect = rectifiedCanvas(bitmap, msg.quad, { needGray: !msg.textOnly });
       rectRef = rect;          // rect 原本是 try 區塊內的 const，外面拿不到（縮圖要用）
       canvas = rect.canvas;
-      if (OCR_NORMALIZE) {
-        // 只換送 OCR 的那一份；canvas 仍保留原始灰階，縮圖對照才不會看起來「被洗白」。
-        // 先看光線分佈：乾淨截圖不套（量測顯示會掉 1~3 格）
-        const st = backgroundStats(rect.gray, rect.width, rect.height);
-        ocrNormalized = st.spread > NORMALIZE_SPREAD;
-        const norm = ocrNormalized ? normalizedGray(st, rect.gray, rect.width, rect.height) : null;
-        if (norm) {
-          const nc = new OffscreenCanvas(rect.width, rect.height);
-          const ng = nc.getContext('2d');
-          const img = ng.createImageData(rect.width, rect.height);
-          for (let i = 0, o = 0; i < norm.length; i++, o += 4) {
-            img.data[o] = img.data[o + 1] = img.data[o + 2] = norm[i];
-            img.data[o + 3] = 255;
-          }
-          ng.putImageData(img, 0, 0);
-          canvas = nc;
-        }
+      if (!msg.textOnly && rect.gray) {
+        try {
+          grid = detectGridLines(rect.gray, rect.width, rect.height);
+        } catch (err) { /* 格線只是輔助，失敗就照舊用空白切欄 */ }
       }
-      try {
-        const lineGray = normalizeForLines(rect.gray, rect.width, rect.height);
-        grid = {
-          v: detectLines(lineGray, rect.width, rect.height, true),
-          h: detectLines(lineGray, rect.width, rect.height, false),
-        };
-      } catch (err) { /* 格線只是輔助，失敗就照舊用空白切欄 */ }
     } finally { bitmap.close(); }
     // per-box：逐框辨識。預設逐行合併遇到歪斜 2° 以上的照片會整張讀成亂碼
     const res = await svc.recognize(canvas, {
@@ -1202,9 +1087,11 @@ async function handleMessage(event) {
       minimumConfidence: 0,
       strategy: 'per-box',
     });
-    // 跨格線的字框先切開重辨識，後面的切欄才不會從這裡歪掉
+    // 跨格線的字框先切開重辨識，後面的切欄才不會從這裡歪掉（文字模式不需要切欄）
     let words = res.results;
-    try { words = await splitStraddling(canvas, res.results, grid, svc); } catch (err) { /* 補救失敗就用原結果 */ }
+    if (!msg.textOnly) {
+      try { words = await splitStraddling(canvas, res.results, grid, svc); } catch (err) { /* 補救失敗就用原結果 */ }
+    }
     // 認得但很沒把握的字（單一個「1」被讀成「人」這種），放大後再認一次
     try { words = await reOcrWeakWords(canvas, words, svc); } catch (err) { /* 失敗就用原結果 */ }
     const confidence = words.length
@@ -1226,22 +1113,23 @@ async function handleMessage(event) {
           score: r.confidence,
         };
       });
-    // 轉正後的縮圖（ImageBitmap，跨執行緒免拷貝）：主執行緒用它畫「點某格 → 放大原圖對照」。
-    // 只在記憶體裡存在，不上傳、不落地。
+    // 轉正後的縮圖（Blob）：表格模式才需要，文字模式不畫原圖對照故跳過編碼
     let preview = null, previewScale = 1;
-    try {
-      if (!rectRef) throw new Error('no rect');
-      const maxDim = 1600;
-      const k = Math.min(1, maxDim / Math.max(rectRef.width, rectRef.height));
-      const pw = Math.max(1, Math.round(rectRef.width * k)), ph = Math.max(1, Math.round(rectRef.height * k));
-      const pc = new OffscreenCanvas(pw, ph);
-      const pg = pc.getContext('2d');
-      pg.imageSmoothingQuality = 'high';
-      pg.drawImage(rectRef.canvas, 0, 0, pw, ph);
-      // 用 Blob 而不是 transferToImageBitmap：後者在部分 Chrome／WebGPU 組合下不支援
-      preview = await pc.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-      previewScale = pw / rectRef.width;   // 原圖 px → 縮圖 px
-    } catch (err) { preview = null; }
+    if (!msg.textOnly) {
+      try {
+        if (!rectRef) throw new Error('no rect');
+        const maxDim = 1600;
+        const k = Math.min(1, maxDim / Math.max(rectRef.width, rectRef.height));
+        const pw = Math.max(1, Math.round(rectRef.width * k)), ph = Math.max(1, Math.round(rectRef.height * k));
+        const pc = new OffscreenCanvas(pw, ph);
+        const pg = pc.getContext('2d');
+        pg.imageSmoothingQuality = 'high';
+        pg.drawImage(rectRef.canvas, 0, 0, pw, ph);
+        // 用 Blob 而不是 transferToImageBitmap：後者在部分 Chrome／WebGPU 組合下不支援
+        preview = await pc.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+        previewScale = pw / rectRef.width;   // 原圖 px → 縮圖 px
+      } catch (err) { preview = null; }
+    }
     // 內部格線太少＝沒有欄界可用 → 交給表格結構模型決定格子（用已映射好的字框）
     let structure = null, structErr = null;
     const weakGrid = (grid?.v?.length || 0) < 3 || (grid?.h?.length || 0) < 3;
@@ -1249,7 +1137,7 @@ async function handleMessage(event) {
       try { structure = await structureTable(canvas, results); } catch (err) { structErr = String(err?.message || err); }
     }
     self.postMessage({ type: 'result', id, confidence, results, grid, structure, structErr, preview, previewScale,
-      normalized: ocrNormalized, backend: { ocr: serviceBackend, layout: layoutBackend() } });
+      backend: { ocr: serviceBackend, layout: layoutBackend() } });
   } catch (err) {
     self.postMessage({ type: 'error', id, message: String(err?.message || err) });
   }

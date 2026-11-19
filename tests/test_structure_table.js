@@ -82,4 +82,25 @@ const built4 = rowsToTable([[cell(0, 0, 100, 100), cell(100, 0, 200, 100)]], [wo
 assert.deepStrictEqual(built4.grid, [["甲", "乙"]]);
 assert.deepStrictEqual(built4.spans, [[{ rs: 1, cs: 1 }, { rs: 1, cs: 1 }]]);
 
+// ---- 5) 去掉頭尾全空列／尾端全空欄，但不可裁掉 rowspan/colspan 涵蓋的格 ----
+const trimEmpty = rowsToTable([
+  [cell(0, 0, 100, 50), cell(100, 0, 200, 50), cell(200, 0, 300, 50)],
+  [cell(0, 50, 100, 150), cell(100, 50, 200, 150), cell(200, 50, 300, 150)],
+  [cell(0, 150, 100, 200), cell(100, 150, 200, 200), cell(200, 150, 300, 200)],
+], [word("A", 50, 100), word("B", 150, 100)]);
+assert.deepStrictEqual(trimEmpty.grid, [["A", "B"]]);
+assert.strictEqual(trimEmpty.cols, 2);
+
+const keepSpanRow = rowsToTable([
+  [cell(0, 0, 100, 200, { rowspan: 2 }), cell(100, 0, 200, 100)],
+  [cell(100, 100, 200, 200)],
+], [word("主", 50, 50), word("100", 150, 50)]);
+assert.strictEqual(keepSpanRow.rows, 2, "有 rowspan 跨到的空尾列不可裁掉");
+
+const keepSpanCol = rowsToTable([
+  [cell(0, 0, 100, 100), cell(100, 0, 300, 100, { colspan: 2 })],
+  [cell(0, 100, 100, 200), cell(100, 100, 200, 200), cell(200, 100, 300, 200)],
+], [word("A", 50, 50), word("BC", 200, 50), word("1", 50, 150), word("2", 150, 150)]);
+assert.strictEqual(keepSpanCol.cols, 3, "有 colspan 跨到的尾欄不可裁掉");
+
 console.log("PASS  結構模式：colspan／rowspan 排列與 spans 標記");

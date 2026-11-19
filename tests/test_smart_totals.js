@@ -109,21 +109,8 @@ const opts = { parse: parseNum, tolerance, numericCols: [1, 2], percentCols: [] 
   assert.strictEqual(bad.unconfirmed.length, 0);
 }
 
-// ---- index.html 裡的兩個「提醒用」純函式 ----
-const fs = require("fs");
-const path = require("path");
-const html = fs.readFileSync(path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
-const src = [
-  html.match(/const TOTALISH = [^\n]*\n/)[0],
-  html.match(/const AMOUNT_SHAPE = [^\n]*\n/)[0],
-  html.match(/const NO_VALUE = [^\n]*\n/)[0],
-  html.match(/function isAmountColumn\(values\) \{[\s\S]*?\n\}/)[0],
-  html.match(/function unparsedNumericCells\(table = tableData, headerRows = headerRowCount\(\)\) \{[\s\S]*?\n\}/)[0],
-  html.match(/function suspiciousTotalRows\(table = tableData, known = new Set\(\)\) \{[\s\S]*?\n\}/)[0],
-].join("\n");
-const Validator = { _num: parseNum };
-const { unparsedNumericCells, suspiciousTotalRows } = new Function("Validator", "SmartTotals",
-  src + "\n; return { unparsedNumericCells, suspiciousTotalRows };")(Validator, SmartTotals);
+// ---- validator.js 裡的兩個「提醒用」純函式 ----
+const { unparsedNumericCells, suspiciousTotalRows } = require("../pic-calculator/static/validator.js");
 
 // 數字欄裡混了看不出是數字的字 → 要抓出來（否則會被靜靜排除在加總外）
 const badTable = [
@@ -302,6 +289,10 @@ assert.strictEqual(SmartTotals.isTotalLabel("本期短絀"), true);
   assert.strictEqual(SmartTotals.chineseAmount("壹萬貳仟參佰"), 12300);
   assert.strictEqual(SmartTotals.chineseAmount("零仟零佰壹拾貳萬參仟肆佰伍拾陸"), 123456);
   assert.strictEqual(SmartTotals.chineseAmount("拾"), 10);
+  assert.strictEqual(SmartTotals.chineseAmount("十萬"), 100000);
+  assert.strictEqual(SmartTotals.chineseAmount("壹萬拾伍"), 10015);
+  assert.strictEqual(SmartTotals.chineseAmount("壹萬仟佰拾"), 10000);
+  assert.ok(isNaN(SmartTotals.chineseAmount("拾萬仟佰拾")), "空白預印表格單位不該被算成 100,000");
   assert.ok(isNaN(SmartTotals.chineseAmount("主持人")));
 
   // 三聯式發票：合計 + 營業稅 = 總計、稅額 5%、大寫

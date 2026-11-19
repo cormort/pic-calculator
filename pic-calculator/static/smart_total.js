@@ -439,14 +439,42 @@
     const t = String(text ?? "").replace(/[\s,，]/g, "");
     if (!t) return NaN;
     let total = 0, section = 0, digit = 0, seen = false;
+    let hasDigit = false, prevWasZero = false, afterBig = false;
     for (const ch of t) {
-      if (ch in CN_DIGIT) { digit = CN_DIGIT[ch]; seen = true; }
-      else if (ch in CN_UNIT) { section += (digit || (seen ? 0 : 1)) * CN_UNIT[ch]; if (!seen) section = CN_UNIT[ch]; digit = 0; seen = true; }
-      else if (ch === "萬") { total += (section + digit) * 1e4; section = 0; digit = 0; seen = true; }
-      else if (ch === "億") { total += (section + digit) * 1e8; section = 0; digit = 0; seen = true; }
-      else return NaN;
+      if (ch in CN_DIGIT) {
+        digit = CN_DIGIT[ch];
+        seen = true;
+        hasDigit = true;
+        prevWasZero = digit === 0;
+        afterBig = false;
+      } else if (ch in CN_UNIT) {
+        const impliedOne = (ch === "拾" || ch === "十") && digit === 0 && !prevWasZero && (!seen || afterBig);
+        const mult = digit || (impliedOne ? 1 : 0);
+        section += mult * CN_UNIT[ch];
+        digit = 0;
+        seen = true;
+        prevWasZero = false;
+        afterBig = false;
+      } else if (ch === "萬") {
+        total += (section + digit) * 1e4;
+        section = 0;
+        digit = 0;
+        seen = true;
+        prevWasZero = false;
+        afterBig = true;
+      } else if (ch === "億") {
+        total += (section + digit) * 1e8;
+        section = 0;
+        digit = 0;
+        seen = true;
+        prevWasZero = false;
+        afterBig = true;
+      } else {
+        return NaN;
+      }
     }
-    return seen ? total + section + digit : NaN;
+    if (!seen || (!hasDigit && !/^[拾十][萬億]?$/.test(t))) return NaN;
+    return total + section + digit;
   }
 
   function voucherChecks(table, opts) {

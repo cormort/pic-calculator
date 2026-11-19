@@ -4,320 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>圖片計算器</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #f5f6fa;
-    --card: #ffffff;
-    --primary: #4361ee;
-    --primary-h: #3451d1;
-    --success: #27ae60;
-    --error: #e74c3c;
-    --warn: #f39c12;
-    --info: #2980b9;
-    --border: #e0e3ef;
-    --text: #2d3436;
-    --muted: #636e72;
-    --radius: 12px;
-    --plus: #2980b9;
-    --minus: #c0392b;
-    --target: #d35400;
-  }
-  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; min-height: 100vh; }
-
-  header {
-    background: var(--primary);
-    color: #fff;
-    padding: 16px 24px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    box-shadow: 0 2px 8px rgba(67,97,238,.3);
-  }
-  header h1 { font-size: 1.25rem; font-weight: 600; }
-  header .icon { font-size: 1.5rem; }
-
-  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
-
-  .upload-zone {
-    background: var(--card);
-    border: 2px dashed var(--border);
-    border-radius: var(--radius);
-    padding: 40px 24px;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color .2s, background .2s;
-    position: relative;
-  }
-  .upload-zone:hover, .upload-zone.drag { border-color: var(--primary); background: #f0f3ff; }
-  .upload-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-  .upload-zone .up-icon { font-size: 3rem; margin-bottom: 12px; }
-  .upload-zone p { color: var(--muted); font-size: .95rem; }
-  .upload-zone strong { color: var(--primary); }
-
-  .btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
-  .quality-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .quality-row label { font-size: .85rem; font-weight: 600; color: var(--muted); }
-  .quality-row select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); font-size: .9rem; }
-  .quality-row .note { font-size: .78rem; color: var(--muted); }
-  .quality-row .note.webgpu-on { color: #1a6640; font-weight: 700; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 10px 20px; border-radius: 8px; font-size: .92rem; font-weight: 600;
-    border: none; cursor: pointer; transition: opacity .15s, transform .1s, background .15s;
-    background: var(--primary); color: #fff;
-  }
-  .btn:hover { opacity: .9; }
-  .btn:active { transform: scale(.97); }
-  .btn:disabled { opacity: .45; cursor: not-allowed; }
-  .btn-outline { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
-  .btn-success { background: var(--success); }
-  .btn-warn { background: var(--warn); }
-  .btn-danger { background: var(--error); }
-  .btn-ghost { background: transparent; color: var(--muted); padding: 6px 10px; }
-  .btn-ghost:hover { background: #eef0f5; opacity: 1; }
-  .btn-sm { padding: 6px 12px; font-size: .82rem; }
-
-  #preview-wrap { margin-top: 20px; display: none; }
-  #preview-wrap img { max-width: 100%; max-height: 60vh; border-radius: 10px; border: 1px solid var(--border); display: block; }
-  /* 四角點框選表格（可拉成梯形做透視矯正） */
-  #crop-wrap { position: relative; width: fit-content; margin: 0 auto; user-select: none; -webkit-user-select: none; }
-  #crop-wrap img { -webkit-user-drag: none; -webkit-touch-callout: none; }
-  #crop-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; border-radius: 10px; }
-  #crop-shade { fill: rgba(0,0,0,.35); fill-rule: evenodd; }
-  #crop-poly { fill: rgba(67,97,238,.10); stroke: var(--primary); stroke-width: 2; vector-effect: non-scaling-stroke; }
-  /* 44px 的透明觸控範圍，中間才是看得到的圓點 */
-  .crop-handle { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px; touch-action: none; cursor: grab; }
-  .crop-handle::after { content: ""; position: absolute; inset: 13px; border-radius: 50%; background: #fff; border: 3px solid var(--primary); box-shadow: 0 1px 4px rgba(0,0,0,.4); }
-  #crop-hint { text-align: center; color: var(--muted); font-size: .82rem; margin-top: 14px; }
-
-  #update-row { text-align: center; margin-top: 24px; font-size: .82rem; color: var(--muted); }
-  #update-bar {
-    display: none; position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%);
-    z-index: 10; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 999px;
-    background: var(--text); color: #fff; font-size: .9rem; box-shadow: 0 4px 16px rgba(0,0,0,.3); white-space: nowrap;
-  }
-
-  #camera-section { display: none; margin-top: 16px; }
-  .video-wrap { position: relative; display: inline-block; width: 100%; }
-  #video { width: 100%; max-height: 280px; border-radius: 10px; border: 1px solid var(--border); background: #000; display: block; }
-  .camera-guide { position: absolute; inset: 10% 8%; pointer-events: none; border: 2px dashed rgba(255,255,255,.55); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0,0,0,.18); }
-
-  .spinner-wrap { display: none; flex-direction: column; align-items: center; gap: 12px; padding: 32px; }
-  .spinner {
-    width: 44px; height: 44px;
-    border: 4px solid var(--border);
-    border-top-color: var(--primary);
-    border-radius: 50%;
-    animation: spin .8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  #workspace { display: none; margin-top: 24px; }
-
-  .card { background: var(--card); border-radius: var(--radius); box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; overflow: hidden; }
-  .card-header {
-    padding: 12px 18px; font-weight: 700; font-size: 1rem;
-    border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    flex-wrap: wrap;
-  }
-  .card-body { padding: 14px 18px; }
-
-  .summary-banner {
-    padding: 12px 16px; font-weight: 600; border-radius: var(--radius); margin-bottom: 12px;
-    display: flex; align-items: center; gap: 10px; font-size: .95rem; flex-wrap: wrap;
-  }
-  .summary-banner .btn { flex: 0 0 auto; white-space: nowrap; }
-  .summary-banner.ok { background: #eafaf1; color: #1a6640; border: 1px solid #a9dfbf; }
-  .summary-banner.err { background: #fdedec; color: #922b21; border: 1px solid #f1948a; }
-  .summary-banner.warn { background: #fef9e7; color: #7d6608; border: 1px solid #f9e79f; }
-  .summary-banner.info { background: #e8f4fd; color: #1a5276; border: 1px solid #aed6f1; }
-
-  /* 控制面板 */
-  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field label { font-size: .78rem; color: var(--muted); font-weight: 600; }
-  .field input, .field select {
-    padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
-    font-size: .9rem; background: #fff; color: var(--text);
-  }
-  .field input { width: 92px; }
-  .field input.wide { width: 220px; }
-  .field select { min-width: 200px; }
-
-  .hint { font-size: .82rem; color: var(--muted); padding: 8px 12px; background: #f8f9fc; border-left: 3px solid var(--info); border-radius: 4px; }
-
-  /* 表格 */
-  .table-wrap { padding: 8px 8px 16px; overflow: auto; max-height: min(62vh, 620px); }
-  @media (max-width: 600px) { .table-wrap { max-height: 54vh; } }
-  /* 選取托盤：先選角色，再點欄號／列號 */
-  /* PDF 換頁列 */
-  .pdf-nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-    margin: 10px 0; font-size: .86rem; color: var(--muted); }
-  .pdf-nav .pdf-hint { font-size: .78rem; }
-
-  /* 點格子的原圖對照：固定在右下，不擋表格操作 */
-  #cell-peek { position: fixed; right: 14px; bottom: 14px; z-index: 40; width: 320px;
-    background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 8px 10px 10px; }
-  #cell-peek .peek-head { display: flex; justify-content: space-between; align-items: center;
-    font-size: .82rem; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
-  #cell-peek canvas { display: block; max-width: 100%; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
-  #cell-peek .peek-note { margin-top: 6px; font-size: .78rem; color: var(--muted); line-height: 1.45; word-break: break-all; }
-  @media (max-width: 600px) {
-    #cell-peek { left: 8px; right: 8px; bottom: 8px; width: auto; }
-    #cell-peek canvas { max-height: 22vh; object-fit: contain; }
-  }
-
-  /* 驗算範圍／方向（原本只有程式讀值、沒有輸入框，等於寫死表頭第 1 列、全表） */
-  .range-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
-    margin-top: 10px; font-size: .86rem; color: var(--muted); }
-  .range-row label { display: inline-flex; align-items: center; gap: 5px; }
-  .range-row input, .range-row select { padding: 4px 6px; border: 1px solid var(--border);
-    border-radius: 6px; font-size: .86rem; background: #fff; color: inherit; }
-  .range-row input[type=number] { width: 4.4em; }
-
-  .sel-tray {
-    position: sticky; top: 8px; z-index: 5;
-    padding: 10px 12px 12px; margin: 0 8px 8px;
-    background: #fff; border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: 0 1px 6px rgba(0,0,0,.08);
-    display: flex; flex-direction: column; gap: 8px;
-  }
-  .sel-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .sel-label { font-size: .82rem; color: var(--muted); font-weight: 700; }
-  .seg {
-    min-height: 40px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border);
-    background: #fff; font-weight: 800; font-size: .9rem; color: var(--muted); cursor: pointer;
-    touch-action: manipulation;
-  }
-  .seg.on { background: #eef2ff; border-color: var(--primary); color: var(--primary); }
-  @media (max-width: 430px) {
-    .sel-label { display: none; }          /* 手機上把標籤藏起來，三個角色按鈕才排得成一列 */
-    .seg { padding: 8px 10px; font-size: .85rem; }
-  }
-  .sel-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 34px; }
-  .chip { min-height: 34px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: #fff; font-weight: 800; font-size: .85rem; cursor: pointer; touch-action: manipulation; }
-  .chip.plus { color: var(--plus); background: #e8f4fd; border-color: #aed6f1; }
-  .chip.minus { color: var(--minus); background: #fdedec; border-color: #f5b7b1; }
-  .chip.mul { color: #6c3483; background: #f4ecf7; border-color: #d2b4de; }
-  .chip.div { color: #117864; background: #e8f8f5; border-color: #a3e4d7; }
-  .chip.target { color: var(--target); background: #fef5e7; border-color: #f8c471; }
-  .chip-note { font-size: .8rem; color: var(--muted); }
-  .smart-actions { margin: 6px 0 0 18px; line-height: 1.9; }
-  .smart-actions li { margin-bottom: 2px; }
-
-  /* 表頭固定：長表格往下捲時還看得到欄號，橫向捲動時列號固定（.row-head 用 sticky left） */
-  table.data thead th { position: sticky; top: 0; z-index: 3; }
-  table.data td.cell-review { box-shadow: inset 0 0 0 3px var(--warn); background: #fff7e0; }
-  table.data { border-collapse: separate; border-spacing: 0; font-size: .88rem; }
-  table.data th, table.data td {
-    border: 1px solid var(--border);
-    padding: 6px 10px; text-align: right; white-space: nowrap;
-    background: #fff;
-    min-width: 60px;
-    position: relative;
-  }
-  table.data th { background: #f0f3ff; font-weight: 700; cursor: pointer; user-select: none; padding: 10px 12px; touch-action: manipulation; }
-  table.data th:focus-visible, table.data td.row-head:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
-  table.data th.row-head, table.data td.row-head {
-    background: #f0f3ff; font-weight: 700; text-align: center; cursor: pointer; user-select: none;
-    padding: 10px 12px; touch-action: manipulation;
-    position: sticky; left: 0; z-index: 1;
-  }
-  table.data td.row-head { background: #f7f8fc; }
-  table.data td[contenteditable="true"] { background: #fff; outline: none; }
-  table.data td[contenteditable="true"]:focus { background: #fffbe6; box-shadow: inset 0 0 0 2px var(--warn); }
-
-  /* 欄/列點選狀態 */
-  table.data th.sel-plus, table.data td.row-head.sel-plus { background: #d6eaf8; color: var(--plus); }
-  table.data th.sel-plus::after, table.data td.row-head.sel-plus::after { content: "+"; font-size: .95rem; color: var(--plus); display: inline-block; margin-left: 3px; font-weight: 700; }
-  table.data th.sel-minus, table.data td.row-head.sel-minus { background: #fadbd8; color: var(--minus); }
-  table.data th.sel-minus::after, table.data td.row-head.sel-minus::after { content: "−"; font-size: .95rem; color: var(--minus); display: inline-block; margin-left: 3px; font-weight: 700; }
-  table.data th.sel-mul, table.data td.row-head.sel-mul { background: #e8daef; color: #6c3483; }
-  table.data th.sel-mul::after, table.data td.row-head.sel-mul::after { content: "×"; font-size: .95rem; color: #6c3483; display: inline-block; margin-left: 3px; font-weight: 700; }
-  table.data th.sel-div, table.data td.row-head.sel-div { background: #d1f2eb; color: #117864; }
-  table.data th.sel-div::after, table.data td.row-head.sel-div::after { content: "÷"; font-size: .95rem; color: #117864; display: inline-block; margin-left: 3px; font-weight: 700; }
-  table.data th.sel-target, table.data td.row-head.sel-target { background: #fdebd0; color: var(--target); }
-  table.data th.sel-target::after, table.data td.row-head.sel-target::after { content: "="; font-size: .95rem; color: var(--target); display: inline-block; margin-left: 3px; font-weight: 700; }
-
-  /* 驗算結果 */
-  table.data.picking td { cursor: pointer; }
-  table.data td.pick-plus { outline: 3px solid #2e86de; outline-offset: -3px; }
-  table.data td.pick-minus { outline: 3px solid #e17055; outline-offset: -3px; }
-  table.data td.cell-ok { background: #eafaf1; font-weight: 700; color: #1a6640; }
-  table.data td.cell-error { background: #fdedec; font-weight: 700; color: var(--error); }
-  /* 低信心格：左側橘線；智慧合計：綠底 */
-  table.data td.cell-low { box-shadow: inset 3px 0 0 var(--warn); }
-  table.data td.cell-fixed { text-decoration: underline dotted var(--info); text-underline-offset: 4px; }
-  /* 數字欄裡看不出是數字的格：紅虛線，並排除在驗算之外 */
-  table.data td.cell-bad-num { outline: 2px dashed var(--error); outline-offset: -3px; }
-  /* 合併儲存格（只有表格結構模式會有）：用底色讓人一眼看出它是跨欄/跨列 */
-  table.data td.cell-merged { background: #fbfcff; }
-  table.data td.cell-merged[colspan], table.data td.cell-merged[rowspan] { border-bottom: 2px solid var(--border); }
-  table.data td.cell-smart-ok { background: #eafaf1; }
-
-  /* 列範圍 */
-  table.data tbody tr.row-out td { opacity: .35; }
-
-  .legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 18px 0; font-size: .78rem; color: var(--muted); }
-  .legend span { display: inline-flex; align-items: center; gap: 4px; }
-  .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid #ccc; }
-
-  .error-list { padding: 0 16px 16px; list-style: none; max-height: 200px; overflow-y: auto; }
-  .error-list li {
-    display: flex; align-items: flex-start; gap: 10px;
-    padding: 8px 12px; margin-bottom: 6px;
-    background: #fdedec; border-radius: 6px; font-size: .88rem;
-    border-left: 4px solid var(--error);
-  }
-  .error-list li .ei { font-size: 1.05rem; flex-shrink: 0; }
-  .error-list li.ok-li { background: #eafaf1; border-left-color: var(--success); }
-
-
-  details { background: #f8f9fc; border-radius: 8px; padding: 8px 12px; margin-top: 8px; }
-  details summary { cursor: pointer; font-size: .85rem; color: var(--muted); font-weight: 600; }
-  details > .controls { margin-top: 10px; }
-
-  /* 觸控裝置：加大點擊範圍；16px 避免 iOS 聚焦時自動放大 */
-  table.data th, table.data td.row-head { touch-action: manipulation; }
-  @media (pointer: coarse) {
-    table.data { font-size: 16px; }
-    table.data th, table.data td { padding: 10px 12px; }
-    table.data th, table.data td.row-head { min-width: 48px; height: 44px; }
-    .btn { min-height: 44px; }
-    .btn-sm { min-height: 40px; padding: 8px 14px; }
-  }
-  /* 辨識完成後收起原圖與框選：手機上它佔掉將近一個螢幕，結果被推到下面 */
-  #preview-toggle { display: none; width: 100%; justify-content: space-between; }
-  #preview-wrap.collapsed > :not(#preview-toggle) { display: none; }
-  #preview-wrap.collapsed > #preview-toggle { display: flex; }
-  #preview-wrap.collapsed { margin-top: 12px; }
-  details.fold { margin-top: 8px; }
-  details.fold > summary { padding: 6px 0; }
-  details.fold > .hint, details.fold > .range-row { margin-top: 6px; }
-  @media (max-width: 600px) {
-    /* 手機不能拖曳，點下方「選擇檔案」功能相同 */
-    .upload-zone { display: none; }
-    #preview-wrap { margin-top: 12px; }
-    .legend { padding: 6px 12px 0; gap: 8px; }
-    header { padding: 12px 16px; }
-    header h1 { font-size: 1.05rem; }
-    .container { padding: 16px 10px; }
-    .upload-zone { padding: 24px 16px; }
-    .btn-row .btn { flex: 1 1 140px; justify-content: center; }
-    .controls { gap: 8px; }
-    .field input { width: 70px; }
-    .field input.wide { width: 100%; }
-    .field select { min-width: 100%; }
-  }
-</style>
+<link rel="stylesheet" href="styles.css?v=76">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 
-<meta name="theme-color" content="#4361ee">
+<meta name="theme-color" content="#17253a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="圖片計算器">
@@ -333,89 +25,194 @@
 </head>
 <body>
 
-<header>
-  <span class="icon">🧮</span>
-  <h1>圖片計算器 — 表格辨識與驗算</h1>
+<header class="app-header">
+  <div class="header-inner">
+    <div class="brand">
+      <span class="icon">🧮</span>
+      <h1>圖片計算器</h1>
+    </div>
+    <!-- 先分流：載入／拍照後自動辨識只跑選定的那一種 -->
+    <div class="mode-switch" id="mode-row" role="group" aria-label="計算模式">
+      <button class="seg" data-mode="table" onclick="setAppMode('table')">📊 表格驗算</button>
+      <button class="seg" data-mode="text" onclick="setAppMode('text')">📝 文字金額</button>
+    </div>
+    <div class="header-actions">
+      <button class="hdr-btn hdr-btn-accent" id="new-input-btn" style="display:none;" onclick="openInputBar()" title="開啟上傳／拍照／貼上面板">
+        <span>＋</span><span class="hdr-lbl">換圖／貼上</span>
+      </button>
+      <button class="hdr-btn" id="settings-btn" onclick="toggleDrawer('settings-drawer')" aria-expanded="false" aria-controls="settings-drawer" title="辨識精度、模型下載與更新">
+        <span>⚙️</span><span class="hdr-lbl">設定</span><span id="model-badge" class="badge-dot" style="display:none;"></span>
+      </button>
+      <button class="hdr-btn" id="help-btn" onclick="toggleDrawer('help-drawer')" aria-expanded="false" aria-controls="help-drawer" title="操作說明與標記圖例">
+        <span>❓</span><span class="hdr-lbl">說明</span>
+      </button>
+    </div>
+  </div>
 </header>
+
+<aside id="settings-drawer" class="drawer-panel" aria-label="辨識設定與模型">
+  <div class="drawer-head">
+    <span>⚙️ 辨識設定與模型</span>
+    <button class="btn btn-ghost btn-sm" onclick="toggleDrawer('settings-drawer', false)">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-section">
+      <div class="drawer-title">辨識精度與自動化</div>
+      <div class="drawer-row">
+        <label for="ocr-quality" class="note" style="font-weight:700;">辨識精度</label>
+        <select id="ocr-quality" onchange="setOcrQuality(this.value)">
+          <option value="tiny">快速（約 6MB）</option>
+          <option value="small">標準（約 30MB）</option>
+        </select>
+      </div>
+      <span id="quality-note" class="note">密集表格／一般拍照（建議）</span>
+      <label class="check-line">
+        <input type="checkbox" id="auto-analyze" checked> 選圖後自動框選並辨識
+      </label>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-title">離線模型快取</div>
+      <span class="note">可在 Wi-Fi 下先存好模型，之後完全離線使用：</span>
+      <div id="model-dl-btns" class="drawer-row"></div>
+      <span id="model-dl-note" class="note"></span>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-title">系統與版本</div>
+      <span id="backend-note" class="note" title="以實際建立的 ONNX session 為準；WebGPU 失敗會自動回退 WASM">後端：OCR —／版面 —</span>
+      <div class="drawer-row">
+        <button class="btn btn-outline btn-sm" onclick="checkUpdate(true)">🔄 檢查更新</button>
+        <span id="update-status" class="note"></span>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<aside id="help-drawer" class="drawer-panel" aria-label="操作說明與圖例">
+  <div class="drawer-head">
+    <span>📖 操作說明與色塊圖例</span>
+    <button class="btn btn-ghost btn-sm" onclick="toggleDrawer('help-drawer', false)">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-section">
+      <div class="drawer-title">色塊與標記說明</div>
+      <div class="legend-grid">
+        <span><i style="background:#dbeafa"></i>＋ 加項欄／列</span>
+        <span><i style="background:#fae1df"></i>− 減項欄／列</span>
+        <span><i style="background:#ecdef6"></i>× 乘項（單價/數量）</span>
+        <span><i style="background:#d6f3ec"></i>÷ 除項</span>
+        <span><i style="background:#fde9cf"></i>＝ 合計目標欄／列</span>
+        <span><i style="background:#eaf7ef"></i>驗算相符／智慧合計</span>
+        <span><i style="background:#fcebeb"></i>驗算不符（需核對）</span>
+        <span><i style="background:#fff;box-shadow:inset 3px 0 0 #d97706"></i>低信心（左側橘線）</span>
+      </div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-title">操作重點</div>
+      <div class="hint">
+        <strong>🪄 智慧合計</strong>：辨識後自動找「合計／小計／總計」列與「單價×數量＝金額」比對；直接點數字修改就會重算。<br>
+        <strong>✏️ 手動選欄列</strong>：先在托盤選角色（＋／−／×／÷／＝），再點表格欄號或列號套用；支援 <strong>Shift＋點</strong> 連續選取，點 chip 可取消。<br>
+        <strong>🧮 點格加總</strong>：開啟後點選任意格切換 ＋／−，即時算出小計而不改動原表。<br>
+        <strong>🔁 沿用設定</strong>：批次處理同格式報表時，下一張會自動比對欄數與表頭並沿用上一張的驗算設定。<br>
+        <strong>📝 文字金額</strong>：頁首切換至「文字金額」，會萃取段落裡的「…元」金額並可點擊原文即時加減重算。
+      </div>
+    </div>
+  </div>
+</aside>
+
+<div id="drop-overlay" aria-hidden="true">
+  <div class="drop-overlay-box">📥 放開滑鼠立即辨識圖片／PDF</div>
+</div>
+
+<!-- 手機/平板：透過 label 原生觸發相機拍照（避免部分手機瀏覽器擋掉 hidden input 的 JS .click()） -->
+<input type="file" id="capture-input" accept="image/*" capture="environment" style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0;">
 
 <div class="container">
 
-  <div class="upload-zone" id="drop-zone">
-    <!-- accept 一定要留著：iOS 的 input[type=file] 一定會彈系統的「選擇一項操作」面板，
-         而面板項目是照 accept 決定的 —— 有 image/* 時是「照片圖庫／選擇檔案」，
-         完全不設 accept 反而多出「相機 攝影機」變成三個選項。單一選項在 iOS 做不到 -->
-    <input type="file" id="file-input" accept="image/*,application/pdf" multiple>
-    <div class="up-icon">📷</div>
-    <p>拖曳圖片到此，或點擊 <strong>選擇檔案</strong></p>
-    <p style="margin-top:6px;font-size:.82rem;">支援 JPG / PNG / WEBP，以及 PDF（逐頁辨識）</p>
+  <section id="intake-section">
+    <div class="intake-reopen-bar">
+      <span>載入新檔案／拍照／貼上文字</span>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-ghost btn-sm" onclick="resetAll()">🆕 清空回首頁</button>
+        <button class="btn btn-ghost btn-sm" onclick="openInputBar(false)">✕ 收起</button>
+      </div>
+    </div>
+
+    <div class="upload-zone" id="drop-zone">
+      <!-- accept 一定要留著：iOS 的 input[type=file] 一定會彈系統的「選擇一項操作」面板 -->
+      <input type="file" id="file-input" accept="image/*,application/pdf" multiple>
+      <div class="up-icon">📷</div>
+      <p>拖曳圖片或 PDF 到此，或點擊 <strong>選擇檔案</strong></p>
+      <p class="up-sub">支援 JPG / PNG / WEBP，以及多頁 PDF（可批次一次辨識）</p>
+    </div>
+
+    <div class="intake-actions">
+      <button class="btn mobile-pick-btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案／PDF</button>
+      <label for="capture-input" class="btn btn-outline" id="camera-btn" onclick="toggleCamera(event)">📷 拍照</label>
+      <button class="btn btn-outline" id="paste-btn" onclick="togglePastePanel()">📋 貼上表格／文字</button>
+      <button class="btn btn-outline" id="text-manual-btn" style="display:none;" onclick="openTextManual()">✏️ 直接輸入文字</button>
+    </div>
+
+    <p class="note" id="text-tip" style="display:none; text-align:center; margin-top:10px;">💡 文字模式建議一次拍約半頁 A4，字太小容易讀錯</p>
+    <div id="model-hint-bar" class="model-hint-bar">
+      <span>首次離線使用可先下載標準 OCR 模型（約 30MB）</span>
+      <button class="btn btn-outline btn-sm" onclick="toggleDrawer('settings-drawer', true)">開啟下載</button>
+    </div>
+  </section>
+
+  <div id="paste-panel" class="card" style="display:none;">
+    <div class="card-header">
+      <span>📋 貼上文字／表格（不經 OCR 直接驗算）</span>
+      <button class="btn-aux btn-ghost btn-sm" onclick="togglePastePanel(false)" aria-label="關閉貼上面板">✕</button>
+    </div>
+    <div class="card-body">
+      <p class="note" style="margin-bottom:10px;">
+        直接從 Excel／Google 試算表複製整塊貼上，或貼上一行一筆的「項目 金額」。支援 <strong>Tab</strong>、<strong>逗號 CSV</strong>、<strong>連續空白</strong>。
+      </p>
+      <textarea id="paste-input" class="paste-textarea" rows="7" spellcheck="false"
+        placeholder="項次&#9;科目&#9;金額&#10;1&#9;人事費&#9;548,000&#10;2&#9;業務費&#9;361,731&#10;合計&#9;&#9;909,731"></textarea>
+      <div class="btn-row" style="justify-content:flex-end; margin-top:10px;">
+        <button class="btn" onclick="applyPastedText()">📊 解析並驗算</button>
+        <button class="btn-aux btn-ghost btn-sm" onclick="togglePastePanel(false)">取消</button>
+      </div>
+    </div>
   </div>
 
-  <!-- PDF 換頁：PDF 沒有「一張圖」的概念，要一頁一頁餵給 OCR -->
+  <div id="camera-section" class="card">
+    <div class="card-header">
+      <span>📷 相機取景</span>
+      <button class="btn btn-ghost btn-sm" onclick="stopCamera()">✕ 關閉</button>
+    </div>
+    <div class="card-body">
+      <div class="quality-row" id="camera-devices-row" style="display:none; margin:0 0 10px;">
+        <label for="camera-device">視訊來源</label>
+        <select id="camera-device" onchange="onCameraDeviceChange(this.value)"></select>
+        <span class="note" id="camera-info"></span>
+      </div>
+      <div class="video-wrap">
+        <video id="video" autoplay playsinline></video>
+        <div class="camera-guide" aria-hidden="true"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="capturePhoto()">📸 拍照擷取</button>
+        <button class="btn btn-outline" onclick="stopCamera()">✕ 關閉相機</button>
+      </div>
+      <canvas id="canvas" style="display:none;"></canvas>
+    </div>
+  </div>
+
+  <!-- PDF 換頁 -->
   <div id="pdf-nav" class="pdf-nav" style="display:none">
     <button class="btn btn-outline btn-sm" onclick="renderPdfPage(pdfPage - 1)">◀ 上一頁</button>
     <span id="pdf-page-info">第 1 / 1 頁</span>
     <button class="btn btn-outline btn-sm" onclick="renderPdfPage(pdfPage + 1)">下一頁 ▶</button>
     <button class="btn btn-outline btn-sm" id="pdf-all-btn" onclick="pdfAllPages()">📚 全部頁一次辨識</button>
-    <span class="pdf-hint">換頁後會自動框選並辨識；匯出的 CSV 檔名會帶頁碼</span>
+    <span class="pdf-hint">換頁後自動框選並辨識；匯出 CSV 會帶頁碼</span>
   </div>
 
-  <!-- 手機/平板：透過 label 原生觸發相機拍照（避免部分手機瀏覽器擋掉 hidden input 的 JS .click()） -->
-  <input type="file" id="capture-input" accept="image/*" capture="environment" style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0;">
-  <!-- 先分流：載入／拍照後自動辨識只跑選定的那一種 -->
-  <div class="sel-row" id="mode-row" style="justify-content:center; margin-bottom:8px;">
-    <button class="seg" data-mode="table" onclick="setAppMode('table')">📊 表格驗算</button>
-    <button class="seg" data-mode="text" onclick="setAppMode('text')">📝 文字金額</button>
-  </div>
-  <p class="note" id="text-tip" style="display:none; text-align:center; margin:0 0 8px;">💡 建議一次拍約半頁 A4，字太小容易讀錯</p>
-  <div class="btn-row">
-    <button class="btn" onclick="document.getElementById('file-input').click()">📁 選擇檔案</button>
-    <label for="capture-input" class="btn btn-outline" id="camera-btn" onclick="toggleCamera(event)">📷 拍照</label>
-    <button class="btn btn-ghost" id="paste-btn" onclick="togglePastePanel()">📋 貼上文字／表格</button>
-  </div>
-  <div class="quality-row" style="margin-top:6px;justify-content:center;">
-    <span class="note">預先下載模型：</span>
-    <span id="model-dl-btns" class="btn-row" style="margin:0;gap:6px;"></span>
-    <span id="model-dl-note" class="note"></span>
-  </div>
-
-  <div id="paste-panel" class="card" style="display:none; margin-top:12px;">
-    <div class="card-body">
-      <p class="hint" style="margin-bottom:10px;">
-        直接從 Excel／Google 試算表複製整塊貼上，或貼上一行一筆的「項目 金額」。
-        支援 <strong>Tab</strong>（試算表預設）、<strong>逗號 CSV</strong>、<strong>連續空白</strong>（Word／PDF 複製）三種分隔。
-        這裡不做辨識，貼什麼就是什麼。
-      </p>
-      <textarea id="paste-input" rows="8" spellcheck="false"
-        style="width:100%; font-family: ui-monospace, SFMono-Regular, monospace; font-size:.88rem;
-               padding:10px; border:1px solid var(--border); border-radius:8px; line-height:1.5;"
-        placeholder="項次&#9;科目&#9;金額&#10;1&#9;人事費&#9;548,000&#10;2&#9;業務費&#9;361,731&#10;合計&#9;&#9;909,731"></textarea>
-      <div class="btn-row" style="margin-top:10px;">
-        <button class="btn" onclick="applyPastedText()">📊 解析並驗算</button>
-        <button class="btn btn-ghost btn-sm" onclick="togglePastePanel(false)">取消</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="camera-section">
-    <div class="quality-row" id="camera-devices-row" style="display:none; margin-bottom:10px;">
-      <label for="camera-device">視訊來源</label>
-      <select id="camera-device" onchange="onCameraDeviceChange(this.value)"></select>
-      <span class="note" id="camera-info"></span>
-    </div>
-    <div class="video-wrap" style="overflow:hidden;border-radius:10px;">
-      <video id="video" autoplay playsinline></video>
-      <div class="camera-guide" aria-hidden="true"></div>
-    </div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button class="btn" onclick="capturePhoto()">📸 拍照</button>
-      <button class="btn btn-outline" onclick="stopCamera()">✕ 關閉相機</button>
-    </div>
-    <canvas id="canvas" style="display:none;"></canvas>
-  </div>
-
+  <!-- 框選與預覽（辨識後自動收合為單行膠囊） -->
   <div id="preview-wrap">
     <button class="btn btn-outline btn-sm" id="preview-toggle" onclick="setPreviewCollapsed(false)">
-      <span>🖼️ 原圖、框選範圍、辨識精度</span><span>展開 ▾</span>
+      <span>🖼️ 調整原圖框選範圍／重辨識</span><span>展開 ▾</span>
     </button>
     <div id="crop-wrap">
       <img id="preview-img" src="" alt="預覽" draggable="false">
@@ -423,57 +220,59 @@
       <div class="crop-handle"></div><div class="crop-handle"></div><div class="crop-handle"></div><div class="crop-handle"></div>
     </div>
     <p id="crop-hint"></p>
-    <div class="btn-row" style="margin-top:6px;">
-      <button class="btn btn-ghost btn-sm" onclick="rotateImage(-1)">⟲ 左轉 90°</button>
-      <button class="btn btn-ghost btn-sm" onclick="rotateImage(1)">⟳ 右轉 90°</button>
-      <button class="btn btn-ghost btn-sm" onclick="setQuad(FULL_QUAD)">↺ 框選整張圖</button>
-    </div>
-    <div class="quality-row">
-      <label for="ocr-quality">辨識精度</label>
-      <select id="ocr-quality" onchange="setOcrQuality(this.value)">
-        <option value="tiny">快速（約 6MB）</option>
-        <option value="small">標準（約 30MB）</option>
-        <option value="medium">高精度（約 139MB，較慢；實測金額位數較易漏讀）</option>
-      </select>
-      <span id="quality-note" class="note">標準：密集表格／一般拍照</span>
-      <label class="note" style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;">
-        <input type="checkbox" id="auto-analyze" checked style="width:auto"> 選圖後自動辨識
-      </label>
-    </div>
-    <div class="quality-row" style="margin-top:2px;">
-      <span id="backend-note" class="note" title="以實際建立的 ONNX session 為準；WebGPU 失敗會自動回退 WASM">後端：OCR —／版面 —</span>
-    </div>
-    <div class="btn-row" style="margin-top:12px;">
+    <div class="preview-toolbar">
+      <div class="btn-row" style="margin:0; gap:6px;">
+        <button class="btn btn-ghost btn-sm" onclick="rotateImage(-1)">⟲ 左轉 90°</button>
+        <button class="btn btn-ghost btn-sm" onclick="rotateImage(1)">⟳ 右轉 90°</button>
+        <button class="btn btn-ghost btn-sm" onclick="setQuad(FULL_QUAD)">↺ 框選整張圖</button>
+      </div>
       <button class="btn" id="analyze-btn" onclick="runAnalyze()">🔍 辨識表格</button>
     </div>
   </div>
 
-  <!-- 浮動加總：捲動長表格時仍看得到（所有計入的項目，不受篩選影響）；拖標題列移動 -->
-  <div id="text-float" style="display:none; position:fixed; right:16px; bottom:16px; z-index:50; min-width:200px; background:var(--card, #fff); border:2px solid var(--primary); border-radius:10px; box-shadow:0 4px 16px rgba(0,0,0,.2);">
-    <div id="text-float-handle" style="display:flex; justify-content:space-between; align-items:center; padding:4px 10px; background:var(--primary); color:#fff; cursor:move; touch-action:none; border-radius:7px 7px 0 0;">
-      <span>⠿ 加總</span><button onclick="hideTextFloat()" style="background:none; border:0; color:#fff; font-size:18px; cursor:pointer;" aria-label="關閉">×</button>
+  <!-- 浮動加總：表格「點格加總」模式或窄螢幕文字模式時顯示；拖標題列移動 -->
+  <div id="text-float">
+    <div id="text-float-handle">
+      <span>⠿ 加總</span><button onclick="hideTextFloat()" aria-label="關閉">×</button>
     </div>
     <div style="padding:8px 12px;">
-      <div id="text-float-num" style="font-size:22px; font-weight:bold;">0</div>
-      <div id="text-float-zh" style="color:var(--muted);"></div>
-      <div id="text-float-info" style="font-size:13px;"></div>
+      <div id="text-float-num">0</div>
+      <div id="text-float-zh"></div>
+      <div id="text-float-info"></div>
     </div>
   </div>
 
-  <!-- 文字金額萃取（規則沿用 budget-opinion-reviewer 的「文字金額萃取」） -->
+  <!-- 文字金額模式（寬螢幕雙欄並排：左全文、右明細與即時總計） -->
   <div class="card" id="text-card" style="display:none;">
+    <div class="card-header">
+      <span>📝 文字金額萃取與加減驗算</span>
+      <button class="btn btn-ghost btn-sm" onclick="resetAll()">🆕 清空重來</button>
+    </div>
     <div class="card-body">
-      <p class="note">辨識出的文字（可直接修改；也可以點下方表格的「內容」逐筆修正，金額會跟著重算）：</p>
-      <textarea id="text-input" rows="8" style="width:100%; box-sizing:border-box; font-size:15px;" oninput="renderTextAmounts()"></textarea>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-        <input id="text-kw-filter" type="search" placeholder="關鍵字篩選（加總跟著變）" oninput="renderTextAmounts()" style="flex:1; min-width:160px;">
-      </div>
-      <p id="text-sum" style="font-weight:bold; margin:10px 0;"></p>
-      <div style="overflow-x:auto;">
-        <table class="text-amounts" style="width:100%; border-collapse:collapse;">
-          <thead><tr><th>計入</th><th>#</th><th>內容</th><th style="text-align:right;">金額</th></tr></thead>
-          <tbody id="text-rows"></tbody>
-        </table>
+      <div class="text-split">
+        <div class="text-left">
+          <p class="note">辨識全文（可直接修改，或點右側明細逐筆修正）：</p>
+          <textarea id="text-input" rows="10" placeholder="可貼上或辨識含「…元」金額的審查意見或說明段落…" oninput="renderTextAmounts()"></textarea>
+        </div>
+        <div class="text-right">
+          <div class="text-total-bar">
+            <div class="text-total-main">
+              <span id="text-inline-num">0</span>
+              <span id="text-inline-zh">0元</span>
+            </div>
+            <span id="text-inline-info">已選 0 個項目</span>
+          </div>
+          <div class="text-filter-bar">
+            <input id="text-kw-filter" type="search" placeholder="關鍵字篩選（加總跟著變）" oninput="renderTextAmounts()">
+            <p id="text-sum"></p>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="text-amounts">
+              <thead><tr><th>計入</th><th>#</th><th>內容</th><th style="text-align:right;">金額</th></tr></thead>
+              <tbody id="text-rows"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -486,7 +285,7 @@
   <div id="workspace">
     <!-- 批次（多張圖）導覽 -->
     <div class="card" id="batch-card" style="display:none;">
-      <div class="card-body" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <div class="card-body" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 14px;">
         <strong id="batch-title">批次</strong>
         <button class="btn btn-outline btn-sm" onclick="batchStep(-1)">◀ 上一張</button>
         <button class="btn btn-outline btn-sm" onclick="batchStep(1)">下一張 ▶</button>
@@ -497,383 +296,117 @@
       </div>
     </div>
 
-    <!-- 批次總表：每張一列，可匯出 CSV 當檢查紀錄 -->
+    <!-- 批次總表 -->
     <div class="card" id="batch-summary-card" style="display:none;">
       <div class="card-header">
         <span>📊 批次檢查總表</span>
         <button class="btn btn-outline btn-sm" onclick="downloadBatchCsv()">⬇️ 匯出 CSV</button>
       </div>
       <div class="card-body" id="batch-summary-body"></div>
-      </div>
-    </div>
-    <!-- 摘要 -->
-    <div id="summary"></div>
-    <div id="smart-note" style="display:none;"></div>
-    <div id="template-note" style="display:none;"></div>
-
-    <!-- 控制面板 -->
-    <div class="card">
-      <div class="card-header">
-        <span>⚙️ 驗算設定</span>
-        <div>
-          <button class="btn btn-outline btn-sm" id="smart-btn" onclick="runSmartTotals(true)">🪄 智慧合計</button>
-          <button class="btn btn-ghost btn-sm" onclick="clearSelections()">↺ 重置選取</button>
-        </div>
-      </div>
-      <div class="card-body">
-        <details class="fold" id="help-fold"><summary>📖 操作說明</summary>
-        <div class="hint">
-          👉 <strong>先在表格正上方的托盤選角色</strong>，再點 <strong>欄號</strong>（表格上方）或 <strong>列號</strong>（左側）套用：<br>
-          <span style="color:var(--plus);font-weight:700">＋</span> 加項 → <span style="color:var(--minus);font-weight:700">−</span> 減項 → <span style="color:var(--target);font-weight:700">＝</span> 合計（每個方向一個）。
-          同一個角色再點一次就取消；選錯直接點對的角色即可。選到的欄／列會列在托盤上，<strong>點 chip 就能取消</strong>。<br>
-          <strong>連續選取</strong>：Shift＋點可一次選一整段（手機可先在托盤選「加項」再逐欄點）。<br>
-          <strong>🪄 智慧合計</strong>：自動找「合計/小計/總計/總額」列並試算比對；直接改數字會重算。<br>
-          <strong>連續處理同格式表格</strong>：下一張會自動沿用這一張的欄／列設定（欄數、表頭相同才套用）。<br>
-          <strong>🧮 點格加總</strong>：開啟後點格子切換 加 → 減 → 取消，浮動視窗即時加總（此時不能改格子，關掉即恢復）。<br>
-          <strong>📝 文字金額</strong>：頁首切到「文字金額」再載入／拍照，會抓出每筆「…元」，點 ○ 切換 ＋／－ 加總；表格內容可直接點來修正。
-        </div>
-        </details>
-        <details class="fold" id="advanced-fold"><summary>⚙️ 進階：驗算範圍、方向、低信心門檻</summary>
-        <div class="range-row">
-          <label>表頭列 <input id="headerRow" type="number" min="1" value="1"></label>
-          <label>起始欄 <input id="startCol" type="number" min="1" value="1"></label>
-          <label>結束列 <input id="endRow" type="number" min="0" value="0" title="0＝全表"></label>
-          <label>結束欄 <input id="endCol" type="number" min="0" value="0" title="0＝全表"></label>
-          <label>驗算方向
-            <select id="auto-mode" onchange="setAutoMode(this.value)">
-              <option value="manual">手動選欄／列</option>
-              <option value="vertical_group">自動：垂直分組（合計列）</option>
-              <option value="horizontal_group">自動：橫向分組（合計欄）</option>
-              <option value="vertical_indent">自動：依縮排歸屬</option>
-            </select>
-          </label>
-          <label>低信心門檻
-            <select id="lowconf" onchange="setLowConfidence(this.value)">
-              <option value="0.6">60%（只提醒明顯有問題的）</option>
-              <option value="0.75">75%</option>
-              <option value="0.85" selected>85%（預設）</option>
-              <option value="0.95">95%（最嚴格）</option>
-            </select>
-          </label>
-        </div>
-        </details>
-      </div>
     </div>
 
-    <!-- 資料表格 -->
-    <div class="card">
-      <div class="card-header">
-        <span>📊 辨識結果 (可直接點 cell 修改)</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-warn btn-sm" id="review-btn" style="display:none" onclick="reviewLowConfidence()">🔎 待核對</button>
-          <button class="btn btn-outline btn-sm" id="pick-btn" onclick="togglePickMode()" title="開啟後點格子：加 → 減 → 取消，浮動視窗即時加總（此時不能改格子）">🧮 點格加總</button>
-          <button class="btn btn-outline btn-sm" id="undo-btn" style="display:none" onclick="undoLast()" title="復原上一次格子修改（Ctrl/⌘+Z）">↩︎ 復原</button>
-          <button class="btn btn-outline btn-sm" onclick="copyTable()">📋 複製表格</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCsv()" title="下載 CSV（UTF-8 BOM，Excel 直接開不會亂碼）">⬇️ 匯出 CSV</button>
-          <button class="btn btn-outline btn-sm" onclick="resetAll()">🆕 重新辨識</button>
-        </div>
-      </div>
-      <div class="legend">
-        <span><i style="background:#d6eaf8"></i>+ 加項</span>
-        <span><i style="background:#fadbd8"></i>− 減項</span>
-        <span><i style="background:#e8daef"></i>× 乘項</span>
-        <span><i style="background:#d1f2eb"></i>÷ 除項</span>
-        <span><i style="background:#fdebd0"></i>= 合計</span>
-        <span><i style="background:#eafaf1"></i>驗算正確／智慧合計</span>
-        <span><i style="background:#fdedec"></i>驗算錯誤</span>
-        <span><i style="background:#fff7e0;border-color:#f39c12"></i>低信心（建議核對）</span>
-      </div>
-      <!-- 選取托盤：貼在表格正上方（選角色 → 馬上點下方欄號／列號，不用往上找） -->
-      <div class="sel-tray" id="sel-tray">
-        <div class="sel-row" id="sel-mode">
-          <span class="sel-label">點欄號／列號時</span>
-          <button class="seg on" data-role="1" onclick="setSelMode(1)">＋ 加項</button>
-          <button class="seg" data-role="-1" onclick="setSelMode(-1)">− 減項</button>
-          <button class="seg" data-role="2" onclick="setSelMode(2)">× 乘項</button>
-          <button class="seg" data-role="-2" onclick="setSelMode(-2)">÷ 除項</button>
-          <button class="seg" data-role="0" onclick="setSelMode(0)">＝ 合計</button>
-          <button class="btn btn-ghost btn-sm" onclick="clearSelections()">清空</button>
-        </div>
-        <div class="sel-chips" id="sel-chips"></div>
-      </div>
-      <div class="table-wrap">
-        <table class="data" id="data-table"></table>
-      </div>
+    <!-- 統一狀態橫幅列 -->
+    <div class="status-stack">
+      <div id="summary"></div>
+      <div id="smart-note" style="display:none;"></div>
+      <div id="template-note" style="display:none;"></div>
     </div>
 
-    <!-- 點格子時的放大對照：直接看原圖那一格（判斷「0 還是 O」） -->
-    <div id="cell-peek" style="display:none">
-      <div class="peek-head">
-        <span>🔍 原圖對照</span>
-        <button class="btn btn-ghost btn-sm" onclick="hideCellPeek()">✕ 收起</button>
-      </div>
-      <canvas id="peek-canvas"></canvas>
-      <div class="peek-note" id="peek-note"></div>
-    </div>
+    <!-- 雙欄工作台：左表格、右原圖對照與錯誤清單 -->
+    <div class="workbench-grid" id="workbench-grid">
+      <div class="workbench-main">
+        <div class="card table-card">
+          <div class="table-toolbar">
+            <div class="mode-pills" role="group" aria-label="驗算模式">
+              <button class="tool-seg on" id="smart-btn" onclick="runSmartTotals(true)">🪄 智慧合計</button>
+              <button class="tool-seg" id="manual-btn" onclick="enterManualSelect()">✏️ 手動選欄列</button>
+              <button class="tool-seg" id="pick-btn" onclick="togglePickMode()" title="開啟後點格子：加 → 減 → 取消，浮動視窗即時加總（此時不能改格子）">🧮 點格加總</button>
+            </div>
+            <div class="tool-actions">
+              <button class="btn btn-warn btn-sm" id="review-btn" style="display:none" onclick="reviewLowConfidence()">🔎 待核對</button>
+              <button class="btn btn-outline btn-sm" id="undo-btn" style="display:none" onclick="undoLast()" title="復原上一次格子修改（Ctrl/⌘+Z）">↩︎ 復原</button>
+              <button class="btn btn-outline btn-sm" onclick="copyTable()">📋 複製</button>
+              <button class="btn btn-outline btn-sm" onclick="exportCsv()" title="下載 CSV（UTF-8 BOM，Excel 直接開不會亂碼）">⬇️ CSV</button>
+              <button class="btn btn-ghost btn-sm" id="range-toggle-btn" onclick="toggleRangeBar()" aria-expanded="false" title="調整表頭列、驗算範圍與低信心門檻">⚙️ 範圍</button>
+            </div>
+          </div>
 
-    <!-- 錯誤清單 -->
-    <div class="card" id="error-card" style="display:none;">
-      <div class="card-header"><span style="color:var(--error)">⚠️ 驗算錯誤</span></div>
-      <ul class="error-list" id="error-list"></ul>
+          <div id="range-panel" class="range-panel">
+            <div class="range-row">
+              <label>表頭列 <input id="headerRow" type="number" min="1" value="1"></label>
+              <label>起始欄 <input id="startCol" type="number" min="1" value="1"></label>
+              <label>結束列 <input id="endRow" type="number" min="0" value="0" title="0＝全表"></label>
+              <label>結束欄 <input id="endCol" type="number" min="0" value="0" title="0＝全表"></label>
+              <label>驗算方向
+                <select id="auto-mode" onchange="setAutoMode(this.value)">
+                  <option value="manual">手動選欄／列</option>
+                  <option value="vertical_group">自動：垂直分組（合計列）</option>
+                  <option value="horizontal_group">自動：橫向分組（合計欄）</option>
+                  <option value="vertical_indent">自動：依縮排歸屬</option>
+                </select>
+              </label>
+              <label>低信心門檻
+                <select id="lowconf" onchange="setLowConfidence(this.value)">
+                  <option value="0.6">60%（只提醒明顯有問題的）</option>
+                  <option value="0.75">75%</option>
+                  <option value="0.85" selected>85%（預設）</option>
+                  <option value="0.95">95%（最嚴格）</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <!-- 選取托盤：僅在手動模式或已選欄列時顯示 -->
+          <div class="sel-tray" id="sel-tray">
+            <div class="sel-row" id="sel-mode">
+              <span class="sel-label">點欄號／列號設為</span>
+              <button class="seg on" data-role="1" onclick="setSelMode(1)">＋ 加項</button>
+              <button class="seg" data-role="-1" onclick="setSelMode(-1)">− 減項</button>
+              <button class="seg" data-role="2" onclick="setSelMode(2)">× 乘項</button>
+              <button class="seg" data-role="-2" onclick="setSelMode(-2)">÷ 除項</button>
+              <button class="seg" data-role="0" onclick="setSelMode(0)">＝ 合計</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearSelections()">清空</button>
+            </div>
+            <div id="sel-mode-hint" class="chip-note"></div>
+            <div class="sel-chips" id="sel-chips"></div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data" id="data-table"></table>
+          </div>
+        </div>
+      </div>
+
+      <aside class="workbench-aside">
+        <!-- 點格子時的放大對照：桌機停駐右側，手機浮於下方 -->
+        <div id="cell-peek" style="display:none">
+          <div class="peek-head">
+            <span>🔍 原圖對照</span>
+            <button class="btn btn-ghost btn-sm" onclick="hideCellPeek()">✕ 收起</button>
+          </div>
+          <canvas id="peek-canvas"></canvas>
+          <div class="peek-note" id="peek-note"></div>
+        </div>
+
+        <!-- 錯誤清單 -->
+        <div class="card" id="error-card" style="display:none;">
+          <div class="card-header"><span style="color:var(--error)">⚠️ 驗算錯誤</span></div>
+          <ul class="error-list" id="error-list"></ul>
+        </div>
+      </aside>
     </div>
   </div>
-
-  <p id="update-row">
-    <button class="btn btn-ghost btn-sm" onclick="checkUpdate(true)">🔄 檢查更新</button>
-    <span id="update-status"></span>
-  </p>
 
 </div>
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=75"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="smart_total.js?v=76"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="validator.js?v=76"></script>
+<script src="table_builder.js?v=76"></script>
+<script src="text_amounts.js?v=76"></script>
+<script src="template.js?v=76"></script>
 <script>
-/* =============================================================
-   驗算邏輯 (移植自 excel-validator/js/validator.js)
-   ============================================================= */
-const Validator = {
-  errors: new Map(),
-
-  validate(opts) {
-    this.errors.clear();
-    const { mode, sheetData, headerRow, endRow, startCol, endCol,
-            selectedIndices, selectedSigns, keywords, sumDirection } = opts;
-    const hRowIdx = headerRow - 1;
-    const sColIdx = startCol - 1;
-    const maxRow = endRow || sheetData.length;
-    const maxCol = endCol || (sheetData[hRowIdx]?.length || 0);
-    const headers = sheetData[hRowIdx] || [];
-
-    switch (mode) {
-      case 'vertical_group':
-        this._vGroup({ sheetData, hRowIdx, maxRow, sColIdx, maxCol,
-          nameColIndex: selectedIndices[0],
-          triggerKeywords: keywords.trigger, excludeKeywords: keywords.exclude,
-          sumDirection });
-        break;
-      case 'horizontal_group':
-        this._hGroup({ sheetData, headers, hRowIdx, maxRow, sColIdx, maxCol,
-          triggerKeywords: keywords.trigger, excludeKeywords: keywords.exclude });
-        break;
-      case 'vertical_indent':
-        this._vIndent({ sheetData, hRowIdx, maxRow, sColIdx, maxCol,
-          nameColIndex: selectedIndices[0] });
-        break;
-      case 'horizontal':
-        this._hManual({ sheetData, hRowIdx, maxRow, selectedIndices, selectedSigns });
-        break;
-      case 'vertical_row':
-        this._vManual({ sheetData, sColIdx, maxCol, selectedIndices, selectedSigns });
-        break;
-    }
-    return { errorCount: Array.from(this.errors.values()).filter(e => !e.ok).length, errors: this.errors,
-      errorList: Array.from(this.errors.values()),
-      totalDiff: Array.from(this.errors.values()).filter(e => !e.ok).reduce((s, e) => s + e.diff, 0) };
-  },
-
-  _vGroup({ sheetData, hRowIdx, maxRow, sColIdx, maxCol, nameColIndex,
-            triggerKeywords, excludeKeywords, sumDirection }) {
-    if (nameColIndex == null) return;
-    for (let c = sColIdx; c < maxCol; c++) {
-      if (c === nameColIndex) continue;
-      let tempSum = 0, pendingCheck = null;
-      const prevTotals = [];   // 已驗過的合計值：用來支援「合計＝各小計相加」這種結構
-      for (let r = hRowIdx + 1; r < maxRow; r++) {
-        const row = sheetData[r];
-        if (!row) continue;
-        // 合計標籤常被打在項次欄（「小計」「合計」），科目欄是空的 —— 讀不到就用該列
-        // 第一個非數字格當名稱，否則自動分組會整張表都找不到合計列
-        const name = String(row[nameColIndex] || '').trim()
-          || String((typeof SmartTotals !== 'undefined' && SmartTotals.rowLabel(row, this._num)) || '');
-        const val = this._num(row[c]);
-        const isNum = !isNaN(val);
-        const isTrig = triggerKeywords.some(k => name.toLowerCase().includes(k.toLowerCase()));
-        const isExcl = excludeKeywords.some(k => name.toLowerCase().includes(k.toLowerCase()));
-        if (isExcl) continue;
-        if (isTrig) {
-          if (sumDirection === 'bottom') {
-            if (isNum) {
-              // 多數報表的「合計」是「各小計相加」，不是「上一條線之後的加總」——
-              // 先試區塊加總，不符再試已驗過合計的累加，兩者皆非才算錯
-              const tol = Math.max(1.0, Math.abs(val) * 0.005);
-              let calc = tempSum;
-              const alt = prevTotals.reduce((a, b) => a + b, 0);
-              if (prevTotals.length && Math.abs(val - calc) > tol && Math.abs(val - alt) <= tol) calc = alt;
-              this._check(r, c, calc, val);
-              prevTotals.push(val);
-            }
-            tempSum = 0;
-          } else {
-            if (pendingCheck !== null) this._check(pendingCheck.row, c, tempSum, pendingCheck.target);
-            tempSum = 0;
-            pendingCheck = isNum ? { row: r, target: val } : null;
-          }
-        } else {
-          if (isNum) tempSum += val;
-        }
-      }
-      if (sumDirection === 'top' && pendingCheck !== null)
-        this._check(pendingCheck.row, c, tempSum, pendingCheck.target);
-    }
-  },
-
-  _hGroup({ sheetData, headers, hRowIdx, maxRow, sColIdx, maxCol,
-            triggerKeywords, excludeKeywords }) {
-    for (let r = hRowIdx + 1; r < maxRow; r++) {
-      const row = sheetData[r];
-      if (!row) continue;
-      let tempSum = 0;
-      for (let c = sColIdx; c < maxCol; c++) {
-        const headerName = String(headers[c] || '');
-        const val = this._num(row[c]);
-        const isNum = !isNaN(val);
-        if (triggerKeywords.some(k => headerName.toLowerCase().includes(k.toLowerCase()))) {
-          if (isNum) this._check(r, c, tempSum, val);
-          tempSum = 0;
-        } else if (!excludeKeywords.some(k => headerName.toLowerCase().includes(k.toLowerCase()))) {
-          if (isNum) tempSum += val;
-        }
-      }
-    }
-  },
-
-  _vIndent({ sheetData, hRowIdx, maxRow, sColIdx, maxCol, nameColIndex }) {
-    if (nameColIndex == null) return;
-    const rowLevels = [];
-    for (let r = hRowIdx + 1; r < maxRow; r++) {
-      const name = sheetData[r] ? String(sheetData[r][nameColIndex] || '') : '';
-      rowLevels[r] = this._leadingSpaces(name);
-    }
-    for (let c = sColIdx; c < maxCol; c++) {
-      if (c === nameColIndex) continue;
-      for (let r = hRowIdx + 1; r < maxRow - 1; r++) {
-        if (rowLevels[r + 1] > rowLevels[r]) {
-          const targetLevel = rowLevels[r + 1];
-          let childrenSum = 0, hasChild = false;
-          for (let k = r + 1; k < maxRow; k++) {
-            if (rowLevels[k] <= rowLevels[r]) break;
-            if (rowLevels[k] === targetLevel) {
-              const v = this._num(sheetData[k]?.[c]);
-              if (!isNaN(v)) { childrenSum += v; hasChild = true; }
-            }
-          }
-          if (hasChild) {
-            const tv = this._num(sheetData[r]?.[c]);
-            if (!isNaN(tv)) this._check(r, c, childrenSum, tv);
-          }
-        }
-      }
-    }
-  },
-
-  // 加減：任意個數相加。乘除：固定兩個運算元（依點選順序 被乘數×乘數、被除數÷除數），不與加減混用
-  _evalManual(inputs, getVal, selectedSigns) {
-    const op = inputs.map(i => selectedSigns.get(i)).find(r => r === 2 || r === -2);
-    if (op) {
-      if (inputs.length !== 2) return null;
-      const [a, b] = inputs.map(i => this._num(getVal(i)));
-      if (isNaN(a) || isNaN(b)) return null;
-      if (op === 2) return a * b;
-      return b === 0 ? null : a / b;
-    }
-    let sum = 0, hasInput = false;
-    for (const idx of inputs) {
-      const v = this._num(getVal(idx));
-      if (!isNaN(v)) { sum += v * (selectedSigns.get(idx) || 1); hasInput = true; }
-    }
-    return hasInput ? sum : null;
-  },
-
-  _hManual({ sheetData, hRowIdx, maxRow, selectedIndices, selectedSigns }) {
-    if (selectedIndices.length < 2) return;
-    const targetIdx = selectedIndices[selectedIndices.length - 1];
-    const inputs = selectedIndices.slice(0, -1);
-    for (let r = hRowIdx + 1; r < maxRow; r++) {
-      const row = sheetData[r];
-      if (!row) continue;
-      const tv = this._num(row[targetIdx]);
-      if (isNaN(tv)) continue;
-      const calc = this._evalManual(inputs, i => row[i], selectedSigns);
-      if (calc !== null) this._check(r, targetIdx, calc, tv);
-    }
-  },
-
-  _vManual({ sheetData, sColIdx, maxCol, selectedIndices, selectedSigns }) {
-    if (selectedIndices.length < 2) return;
-    const targetIdx = selectedIndices[selectedIndices.length - 1];
-    const inputs = selectedIndices.slice(0, -1);
-    for (let c = sColIdx; c < maxCol; c++) {
-      const tv = this._num(sheetData[targetIdx]?.[c]);
-      if (isNaN(tv)) continue;
-      const calc = this._evalManual(inputs, r => sheetData[r]?.[c], selectedSigns);
-      if (calc !== null) this._check(targetIdx, c, calc, tv);
-    }
-  },
-
-  _check(row, col, calc, actual) {
-    const tol = Math.max(1.0, Math.abs(actual) * 0.005);
-    const diff = actual - calc;
-    if (Math.abs(diff) > tol) {
-      const key = row * 100000 + col;
-      this.errors.set(key, {
-        row, col, expected: calc, actual, diff,
-        message: `第 ${row + 1} 列 / 第 ${col + 1} 欄 — 應為 ${calc.toLocaleString(undefined,{maximumFractionDigits:2})}，實際為 ${actual.toLocaleString(undefined,{maximumFractionDigits:2})} (差 ${diff >= 0 ? '+' : ''}${diff.toLocaleString(undefined,{maximumFractionDigits:2})})`,
-      });
-    } else {
-      const key = row * 100000 + col;
-      this.errors.set(key + 0.1, { row, col, ok: true });
-    }
-  },
-
-  hasErr(r, c) {
-    const e = this.errors.get(r * 100000 + c);
-    return e && !e.ok;
-  },
-  isOk(r, c) {
-    const e = this.errors.get(r * 100000 + c + 0.1);
-    return !!e;
-  },
-  errMsg(r, c) {
-    const e = this.errors.get(r * 100000 + c);
-    return e?.message || null;
-  },
-
-  _num(v) {
-    if (v === null || v === undefined || v === '') return NaN;
-    if (typeof v === 'number') return isNaN(v) ? NaN : v;
-    let s = toHalfWidth(v.toString()).trim();
-    if (s === '') return NaN;
-    // 金額前後常帶幣別（NT$、USD、NTS＝$ 被讀成 S）或手寫打勾被讀成的 V、J、√：
-    // 英文字母與 $ 只出現在數字前後、合計不超過 6 個字，中間又是單一個數字時，只取數字。
-    // 字母夾在數字中間（Q3 2024、2023 vs 2024）就不算數字。
-    // ponytail: 「A 100」「ISO 9001」這種短英文＋數字仍會被當成數字；金額欄很少見，遇到再加例外
-    s = s.replace(/[√✓✔]/g, ' ').trim();
-    // 手寫勾被讀成「1」「|」「I」時會黏在金額前面（例：'1 NTS 2,353'、'| NT$ 20,000'）。
-    // 只在「後面接著幣別、幣別後面還有數字」時才丟掉這個前導字 ——
-    // 否則「1 件」這種真的以數字開頭的內容會被吃掉
-    s = s.replace(/^[1|Iil]\s*(?=[A-Za-z$]{1,4}\s*\d)/, '').trim();
-    const money = s.match(/^([A-Za-z$\s]*?)([-(（]?\s*\d[\d,，.]*(?:[,，.]\s+\d[\d,，.]*)*\s*[)）]?\s*[%％]?)\s*([A-Za-z$元]*)$/);
-    // 例外：數字後面「緊黏」的全是長得像數字的字母（2OO、1,0l）是辨識錯，不是幣別 ——
-    // 當成 2 會讓驗算悄悄算錯；回傳 NaN 才會被標成「不像數字」請人修正
-    const misread = money && /\d$/.test(money[2]) && /^[OoQDIl|SsBZzGgqT]+$/.test(money[3]);
-    if (money && !misread && (money[1] + money[3]).replace(/\s/g, '').length <= 6) s = money[2];
-    s = fixThousandDots(s);
-    if (/[a-zA-Z一-龥]/.test(s)) return NaN;
-    if (!/^[-\d\.,，\(\)\$%\s]+$/.test(s)) return NaN;
-    s = s.replace(/[,，\$\s]/g, '').replace(/[%％]/g, '');
-    if (s.startsWith('(') && s.endsWith(')')) s = '-' + s.replace(/[\(\)]/g, '');
-    const n = parseFloat(s);
-    return isNaN(n) ? NaN : n;
-  },
-
-  _leadingSpaces(s) {
-    if (!s || typeof s !== 'string') return 0;
-    const m = s.match(/^[\s 　]*/);
-    return m ? m[0].length : 0;
-  },
-};
-
 /* =============================================================
    應用狀態
    ============================================================= */
@@ -883,7 +416,6 @@ let tableData = [];           // 2D array of strings
 let cellConfidence = [];      // 與 tableData 對齊的每格 OCR 信心 (0~1)
 let cellRepairs = new Map();  // "r,c" -> { from, to } 自動整理過的數字（千分位/全形/混淆字）
 // 欄／列的驗算角色：＋ 加項、− 減項、× 乘項、÷ 除項、＝ 合計（每個方向只會有一個合計）
-const emptySel = () => ({ plus: [], minus: [], mul: [], div: [], order: [], total: null });
 const sel = {
   col: emptySel(),
   row: emptySel(),
@@ -903,11 +435,29 @@ let smartMultiply = null;                    // 乘法關係（單價×數量＝
    檔案 / 相機
    ============================================================= */
 const dropZone = document.getElementById('drop-zone');
+const dropOverlay = document.getElementById('drop-overlay');
+let dragDepth = 0;
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
+window.addEventListener('dragenter', e => {
+  if ([...(e.dataTransfer?.types || [])].includes('Files')) {
+    dragDepth++;
+    dropOverlay?.classList.add('active');
+  }
+});
+window.addEventListener('dragover', e => {
+  if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
+});
+window.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) dropOverlay?.classList.remove('active');
+});
+window.addEventListener('drop', e => {
+  dragDepth = 0;
+  dropOverlay?.classList.remove('active');
   dropZone.classList.remove('drag');
+  if (!e.dataTransfer?.files?.length) return;
+  e.preventDefault();
   const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/') || /\.pdf$/i.test(f.name || ''));
   if (files.length) handleFiles(files);
 });
@@ -971,19 +521,122 @@ function autoRun() {
   else runAnalyze();
 }
 
+// UI 狀態協調（兩階段入口／抽屜／工具列／右側欄）
+let manualTrayOpen = false;
+function closeDrawers() {
+  ['settings-drawer', 'help-drawer'].forEach(id => document.getElementById(id)?.classList.remove('open'));
+  document.getElementById('settings-btn')?.setAttribute('aria-expanded', 'false');
+  document.getElementById('help-btn')?.setAttribute('aria-expanded', 'false');
+}
+function toggleDrawer(id, force) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const willOpen = force === undefined ? !el.classList.contains('open') : !!force;
+  closeDrawers();
+  if (willOpen) {
+    el.classList.add('open');
+    const btnId = id === 'settings-drawer' ? 'settings-btn' : 'help-btn';
+    document.getElementById(btnId)?.setAttribute('aria-expanded', 'true');
+  }
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.('.drawer-panel, #settings-btn, #help-btn, #model-hint-bar')) closeDrawers();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawers(); });
+
+function openInputBar(force) {
+  const on = force === undefined ? !document.body.classList.contains('show-intake') : !!force;
+  document.body.classList.toggle('show-intake', on);
+  document.getElementById('new-input-btn')?.classList.toggle('active', on);
+  if (!on) togglePastePanel(false);
+}
+function openTextManual() {
+  setAppMode('text');
+  openInputBar(false);
+  const card = document.getElementById('text-card');
+  card.style.display = 'block';
+  renderTextAmounts();
+  syncAppLayout();
+  document.getElementById('text-input')?.focus();
+}
+function toggleRangeBar(force) {
+  const el = document.getElementById('range-panel');
+  const btn = document.getElementById('range-toggle-btn');
+  if (!el) return;
+  const open = force === undefined ? !el.classList.contains('open') : !!force;
+  el.classList.toggle('open', open);
+  btn?.classList.toggle('active', open);
+  btn?.setAttribute('aria-expanded', String(open));
+}
+function enterManualSelect() {
+  if (pickMode) { pickMode = false; applyPicks(); }
+  manualTrayOpen = true;
+  clearSmart();
+  useManualMode();
+  renderSelectionTray();
+  renderTable();
+  syncToolbarState();
+}
+function syncToolbarState() {
+  const hasManualSel = selCount('col') > 0 || selCount('row') > 0;
+  const inManual = !smartActive && !pickMode && (manualTrayOpen || hasManualSel || autoMode !== 'manual');
+  document.getElementById('smart-btn')?.classList.toggle('on', smartActive && !pickMode);
+  document.getElementById('manual-btn')?.classList.toggle('on', inManual);
+  document.getElementById('pick-btn')?.classList.toggle('on', pickMode);
+  const tray = document.getElementById('sel-tray');
+  if (tray) tray.classList.toggle('open', !smartActive && !pickMode && (manualTrayOpen || hasManualSel));
+  const smartVisible = smartActive && document.getElementById('smart-note')?.style.display !== 'none';
+  document.getElementById('summary')?.classList.toggle('summary-compact', smartVisible);
+}
+function syncAsideLayout() {
+  const grid = document.getElementById('workbench-grid');
+  if (!grid) return;
+  const peekOn = document.getElementById('cell-peek')?.style.display !== 'none';
+  const errOn = document.getElementById('error-card')?.style.display !== 'none';
+  grid.classList.toggle('has-aside', peekOn || errOn);
+}
+function syncAppLayout() {
+  const wsShown = document.getElementById('workspace')?.style.display === 'block';
+  const textShown = document.getElementById('text-card')?.style.display === 'block';
+  const prevShown = document.getElementById('preview-wrap')?.style.display === 'block';
+  const hasContent = wsShown || textShown || prevShown;
+  document.body.classList.toggle('has-content', hasContent);
+  document.body.classList.toggle('mode-text', appMode === 'text');
+  document.body.classList.toggle('table-active', wsShown);
+  const newBtn = document.getElementById('new-input-btn');
+  if (newBtn) newBtn.style.display = hasContent ? 'inline-flex' : 'none';
+  if (!hasContent) document.body.classList.remove('show-intake');
+  document.getElementById('new-input-btn')?.classList.toggle('active', document.body.classList.contains('show-intake'));
+  const manualTextBtn = document.getElementById('text-manual-btn');
+  if (manualTextBtn) manualTextBtn.style.display = appMode === 'text' ? 'inline-flex' : 'none';
+  syncToolbarState();
+  syncAsideLayout();
+}
+
 // 模式分流：表格驗算／文字金額（記住上次的選擇）
 let appMode = (() => { try { return localStorage.getItem('pcAppMode') === 'text' ? 'text' : 'table'; } catch (e) { return 'table'; } })();
 function runAnalyze() { return appMode === 'text' ? analyzeText() : analyzeImage(); }
 function setAppMode(m) {
   appMode = m;
   try { localStorage.setItem('pcAppMode', m); } catch (e) {}
-  document.querySelectorAll('#mode-row .seg').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  document.querySelectorAll('#mode-row .seg').forEach(b => {
+    const active = b.dataset.mode === m;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
   document.getElementById('analyze-btn').textContent = m === 'text' ? '📝 辨識文字萃取金額' : '🔍 辨識表格';
   document.getElementById('text-tip').style.display = m === 'text' ? 'block' : 'none';
-  // 另一種模式的結果收起來，免得看錯
-  if (m === 'text') document.getElementById('workspace').style.display = 'none';
-  else document.getElementById('text-card').style.display = 'none';
+  // 另一種模式的結果收起來，免得看錯；切回已有結果的模式時再恢復顯示
+  if (m === 'text') {
+    document.getElementById('workspace').style.display = 'none';
+    document.getElementById('text-card').style.display = document.getElementById('text-input').value ? 'block' : 'none';
+  } else {
+    document.getElementById('text-card').style.display = 'none';
+    document.getElementById('workspace').style.display = tableData.length ? 'block' : 'none';
+  }
+  openInputBar(false);
   updateFloat();
+  syncAppLayout();
 }
 let analyzeDone = null;   // 批次「全部辨識」用：這一張辨識結束（成功或失敗）時呼叫
 
@@ -1057,43 +710,7 @@ async function openPdf(file, pageNo = 1) {
 /* PDF 文字層 → 我們 pipeline 認得的 words（x1,y1,x2,y2,cx,cy,h,score）。
    電子檔 PDF 的文字是向量、座標精確，直接拿比 OCR 準得多（也不必下載模型）。
    要注意字型編碼：中文常被輸出成「康熙部首」（⾦、⼈、⽫），NFKC 一次就修好。 */
-function pdfTextWords(items, viewport) {
-  const out = [];
-  const wsum = s => [...s].reduce((n, ch) => n + charWidth(ch), 0);
-  for (const item of items) {
-    const raw = (item.str || '').normalize('NFKC');
-    if (!raw.trim()) continue;
-    const m = pdfjsLib.Util.transform(viewport.transform, item.transform);
-    const fontSize = Math.hypot(m[2], m[3]) || viewport.scale * 10;
-    // 文字前進方向（單位向量）：轉 90° 的表頭也要框在對的位置，不能一律當水平
-    const len = Math.hypot(m[0], m[1]) || 1, ux = m[0] / len, uy = m[1] / len;
-    const adv = Math.max(item.width * viewport.scale, fontSize * 0.3);
-    const total = wsum(raw) || 1;
-    // item.width 含頭尾空白，而且用空白對齊的 PDF 會把幾欄塞進同一個 item
-    // （「項目　　50,000」）：以連續兩個以上的空白切開，各段依字寬比例定位
-    for (const part of raw.matchAll(/\S+(?:\s\S+)*/g)) {
-      const a = wsum(raw.slice(0, part.index)) / total * adv;
-      const b = a + wsum(part[0]) / total * adv;
-      // 四個角：沿基線 a..b，往上 0.85、往下 0.25 個字高（視窗座標 y 向下）
-      const xs = [], ys = [];
-      for (const t of [a, b]) for (const s of [0.85 * fontSize, -0.25 * fontSize]) {
-        xs.push(m[4] + ux * t + uy * s);
-        ys.push(m[5] + uy * t - ux * s);
-      }
-      const x1 = Math.min(...xs), x2 = Math.max(...xs), y1 = Math.min(...ys), y2 = Math.max(...ys);
-      // 粗體常用「同一串字在原地（或偏一點點）再畫一次」做出來，文字層裡就有兩份；
-      // 不去掉會併成「208,949,201 208,949,201」，整格變成看不懂的數字
-      const tol = fontSize * 0.15;
-      if (out.some(o => o.text === part[0] && Math.abs(o.x1 - x1) < tol && Math.abs(o.y1 - y1) < tol)) continue;
-      out.push({
-        text: part[0], x1, x2, y1, y2,
-        // h 是「字高」不是框高：轉向的字框很長，拿去算列距會把整張表的列併在一起
-        cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, h: fontSize * 1.1, score: 1,
-      });
-    }
-  }
-  return out;
-}
+
 
 /* 文字層不能信的兩種情況，命中就改走 OCR（使用者仍可手動切回文字層）：
    1. 亂碼：字型沒有 ToUnicode 對照表，取出來是私用區字元或 �
@@ -1101,55 +718,6 @@ function pdfTextWords(items, viewport) {
       品質不明，不能當成「原檔的字」
    ponytail: 只認「不可見文字」(Tr 3/7)；舊式「文字畫在圖片底下」的掃描檔抓不到，
    遇到再加「整頁大圖蓋在文字上」的判斷（要追 CTM）。 */
-function textLayerGarbled(words) {
-  const text = words.map(w => w.text).join('');
-  const bad = (text.match(/[\ufffd\ue000-\uf8ff\u0000-\u001f]/g) || []).length;
-  return bad > text.length * 0.1;
-}
-
-function textMostlyHidden(fnArray, argsArray, OPS) {
-  const shows = [OPS.showText, OPS.showSpacedText, OPS.nextLineShowText, OPS.nextLineSetSpacingShowText];
-  const stack = [];
-  let mode = 0, hidden = 0, visible = 0;
-  for (let i = 0; i < fnArray.length; i++) {
-    const fn = fnArray[i];
-    if (fn === OPS.save || fn === OPS.paintFormXObjectBegin) stack.push(mode);
-    else if (fn === OPS.restore || fn === OPS.paintFormXObjectEnd) mode = stack.pop() ?? 0;
-    else if (fn === OPS.setTextRenderingMode) mode = argsArray[i][0];
-    else if (shows.includes(fn)) {
-      const n = argsArray[i]?.[0]?.length || 1;
-      if (mode === 3 || mode === 7) hidden += n; else visible += n;
-    }
-  }
-  return hidden > visible;
-}
-
-// 有文字層才用（門檻寬鬆：>= 8 個字塊且總字數 >= 20，避免把目錄頁/封面當表格）
-function hasUsableTextLayer(words) {
-  if (!words || words.length < 8) return false;
-  const chars = words.reduce((n, w) => n + w.text.length, 0);
-  return chars >= 20;
-}
-
-// 依框選的四角（比例座標）過濾文字，超出表格範圍的字不要
-function filterWordsByQuad(words, q, size) {
-  if (!q || !size) return words;
-  const isFull = Math.abs(q[0][0]) < 1e-6 && Math.abs(q[0][1]) < 1e-6
-    && Math.abs(q[1][0] - 1) < 1e-6 && Math.abs(q[2][1] - 1) < 1e-6;
-  if (isFull) return words;
-  // q 是 0~1 的比例、words 是這一頁的像素座標，先換算
-  const poly = q.map(([x, y]) => [x * size.width, y * size.height]);
-  const inside = (x, y) => {
-    let hit = false;
-    for (let i = 0, j = 3; i < 4; j = i++) {
-      const [xi, yi] = poly[i], [xj, yj] = poly[j];
-      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
-    }
-    return hit;
-  };
-  return words.filter(w => inside(w.cx, w.cy));
-}
-
 async function renderPdfPage(n) {
   if (!pdfDoc) return;
   const target = Math.min(Math.max(1, n), pdfDoc.numPages);
@@ -1237,6 +805,13 @@ function loadFile(file, opts = {}) {
     img.onload = () => {
       if (currentFile !== file || quadTouched) return;
       const hint = document.getElementById('crop-hint');
+      if (appMode === 'text') {
+        detectionFile = null;
+        detectionPromise = null;
+        if (hint) hint.textContent = '文字金額模式：將辨識整張圖片（可手動框選局部範圍）。';
+        autoRun();
+        return;
+      }
       if (hint) hint.textContent = '偵測表格範圍中…';
       detectionFile = file;
       detectionPromise = detectTableInWorker(file)
@@ -1258,6 +833,8 @@ function loadFile(file, opts = {}) {
     document.getElementById('preview-wrap').style.display = 'block';
     setPreviewCollapsed(false);
     document.getElementById('workspace').style.display = 'none';
+    openInputBar(false);
+    syncAppLayout();
   }
   stopCamera();
 }
@@ -1343,7 +920,7 @@ async function refreshCameraList() {
   try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput'); } catch (err) { return; }
   if (devices.length < 2) { row.style.display = 'none'; return; }
   sel.innerHTML = devices.map((d, i) =>
-    `<option value="${d.deviceId}">${escapeHtml(d.label || `攝影機 ${i + 1}`)}</option>`).join('');
+    `<option value="${escapeHtml(d.deviceId)}">${escapeHtml(d.label || `攝影機 ${i + 1}`)}</option>`).join('');
   if (cameraDeviceId && devices.some(d => d.deviceId === cameraDeviceId)) sel.value = cameraDeviceId;
   row.style.display = 'flex';
 }
@@ -1423,7 +1000,6 @@ async function capturePhoto() {
 const OCR_QUALITY_INFO = {
   tiny: { label: '快速', size: '6MB' },
   small: { label: '標準', size: '31MB' },
-  medium: { label: '高精度', size: '139MB' },
 };
 let ocrQuality = 'small';
 const backendInfo = { ocr: null, layout: null };
@@ -1504,10 +1080,10 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v75';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v76';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
-let ocrPreview = null, ocrPreviewScale = 1, cellBoxes = [];
+let ocrPreview = null, ocrPreviewBlob = null, ocrPreviewScale = 1, cellBoxes = [];
 let tableExact = false;   // 這張表取自 PDF 文字層：cellBoxes 的座標精確，可以拿科目縮排做層級驗算
 let pendingText = null;   // 這一頁的 PDF 文字層：{ words, size, blob, suspect }
 let useTextLayer = false; // 用文字層還是 OCR（文字層可疑時預設 OCR；摘要上的按鈕可切換）
@@ -1579,7 +1155,7 @@ function getOcrWorker() {
     const job = ocrPending.get(msg.id);
     if (!job) return;
     ocrPending.delete(msg.id);
-    if (msg.type === 'result' || msg.type === 'detect-result' || msg.type === 'grid-result') job.resolve(msg);
+    if (msg.type === 'result' || msg.type === 'detect-result' || msg.type === 'grid-result' || msg.type === 'warmup-result') job.resolve(msg);
     else job.reject(new Error(msg.message || '背景 OCR 失敗'));
   };
   worker.onerror = (event) => {
@@ -1630,6 +1206,7 @@ async function ocrWords(file, quad, textOnly = false) {
   // worker 傳回的是轉正後的縮圖 Blob；轉成 ImageBitmap 才好畫（記得放掉舊的，別累積記憶體）
   try { ocrPreview?.close?.(); } catch (e) {}
   ocrPreview = null;
+  ocrPreviewBlob = msg.preview || null;
   ocrPreviewScale = msg.previewScale || 1;
   if (msg.preview) {
     try { ocrPreview = await createImageBitmap(msg.preview); } catch (e) { ocrPreview = null; }
@@ -1643,9 +1220,7 @@ function setOcrQuality(q) {
   try { localStorage.setItem('pcOcrQuality', q); } catch (err) { /* 忽略 */ }
   const note = document.getElementById('quality-note');
   const suffix = tableData.length ? '；請按「辨識表格」套用' : '';
-  if (note) note.textContent = (q === 'tiny' ? '最快；適合清楚截圖'
-    : q === 'small' ? '密集表格／一般拍照（建議）'
-    : '小字、低光、難拍照片（較慢）。實測：這顆模型在金額位數上反而更容易漏讀，先用標準模型試') + suffix;
+  if (note) note.textContent = (q === 'tiny' ? '最快；適合清楚截圖' : '密集表格／一般拍照（建議）') + suffix;
   const st = document.getElementById('spinner-text');
   if (st) st.textContent = `已切換為${OCR_QUALITY_INFO[q].label}模型，下次辨識會載入（約 ${OCR_QUALITY_INFO[q].size}）…`;
   checkModels();
@@ -1672,7 +1247,12 @@ async function checkModels() {
   if (!box || !self.caches) return;
   const states = await Promise.all(Object.keys(OCR_QUALITY_INFO).map(async q => [q, !(await missingModels(q)).length]));
   box.innerHTML = states.map(([q, ok]) => `<button class="btn btn-ghost btn-sm" data-q="${q}" onclick="downloadModels('${q}', this)"${ok ? ' disabled' : ''}>`
-    + `${ok ? '✓' : '⬇'} ${OCR_QUALITY_INFO[q].label} ${OCR_QUALITY_INFO[q].size}</button>`).join('');
+    + `${ok ? `✓ ${OCR_QUALITY_INFO[q].label} 已快取` : `⬇ ${OCR_QUALITY_INFO[q].label}（${OCR_QUALITY_INFO[q].size}）下載`}</button>`).join('');
+  const curOk = states.some(([q, ok]) => q === ocrQuality && ok);
+  const badge = document.getElementById('model-badge');
+  if (badge) badge.style.display = curOk ? 'none' : 'inline-block';
+  const hintBar = document.getElementById('model-hint-bar');
+  if (hintBar) hintBar.classList.toggle('show', !curOk);
 }
 async function downloadModels(q, btn) {
   const note = document.getElementById('model-dl-note');
@@ -1685,8 +1265,9 @@ async function downloadModels(q, btn) {
     // 讀到的卻是解壓後位元組，兩者對不上（標準：傳 37.8MB、解開 44MB）
     let done = 0;
     for (const [i, u] of urls.entries()) {
-      const resp = await fetch(u);
+      const resp = await fetch(u, { headers: { 'X-Predownload': '1' } });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const contentType = resp.headers.get('Content-Type') || '';
       const reader = resp.body.getReader(), chunks = [];
       for (;;) {
         const { done: end, value } = await reader.read();
@@ -1694,447 +1275,21 @@ async function downloadModels(q, btn) {
         chunks.push(value); done += value.length;
         note.textContent = `${OCR_QUALITY_INFO[q].label}下載中…第 ${i + 1}／${urls.length} 個檔，已 ${(done / 1e6).toFixed(1)} MB`;
       }
-      // 自己存並等它存完：SW 的背景存檔在手機上失敗也不會報錯，畫面就一直顯示「尚未下載」
-      try { await cache.put(u, new Response(new Blob(chunks))); }
-      catch (e) { throw new Error(`存檔失敗：${e.name || ''} ${e.message || e}。請清出手機空間，或改用「快速」精度`); }
+      // 自己存並等它存完；保留 Content-Type 並在寫入後釋放暫存陣列
+      const headers = contentType ? { 'Content-Type': contentType } : undefined;
+      try {
+        await cache.put(u, new Response(new Blob(chunks, contentType ? { type: contentType } : undefined), { headers }));
+      } catch (e) {
+        throw new Error(`存檔失敗：${e.name || ''} ${e.message || e}。請清出手機空間，或改用「快速」精度`);
+      } finally {
+        chunks.length = 0;
+      }
     }
     note.textContent = `✓ ${OCR_QUALITY_INFO[q].label}模型已下載，可離線辨識`;
   } catch (err) {
     note.textContent = String(err.message).startsWith('存檔失敗') ? `❌ ${err.message}` : `❌ 下載失敗（${err.message || err}），請換個網路再按一次`;
   }
   checkModels();
-}
-
-/* 由文字框重建二維表格 (移植自 app/table_ocr.py) */
-const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
-
-/* 一個字大約佔幾個「半形字寬」：中文 1、數字／英文 0.55、標點 0.4。
-   只用來把「格線落在第幾個字之間」換算出來，不需要很準。 */
-function charWidth(ch) {
-  if (/[\u2e80-\u9fff\uff01-\uff60]/.test(ch)) return 1;
-  if (/[0-9a-zA-Z]/.test(ch)) return 0.55;
-  if (/[\s]/.test(ch)) return 0.3;
-  return 0.4;
-}
-
-/* 偵測框跨過格線時拆成兩格。
-   實拍常見：項次「1-1」右對齊、科目「主持人費」左對齊，兩者只隔一條細線，
-   PP-OCR 的文字偵測會把整串框成一個字（「1-1主」）。這個框之後不論怎麼切欄，
-   都只能落在同一欄，整張表從這裡開始左右錯位 —— 於是先依格線把文字拆回去。 */
-function splitBoxAtLine(w, vLines) {
-  let boxes = [w];
-  for (const line of vLines) {
-    const next = [];
-    for (const b of boxes) {
-      const x = line.a + line.b * b.cy;
-      const text = b.text;
-      const wPx = b.x2 - b.x1;
-      if (text.length < 2 || wPx <= 0) { next.push(b); continue; }
-      const frac = (x - b.x1) / wPx;
-      // 落在框的邊緣就當成偵測器的 padding，不是真的跨格
-      if (frac <= 0.1 || frac >= 0.9) { next.push(b); continue; }
-      const total = [...text].reduce((s, ch) => s + charWidth(ch), 0);
-      const target = frac * total;
-      // 切在「字中心越過線」的那個字之前，不要把半個字切給左邊
-      let acc = 0, idx = 0;
-      for (let i = 0; i < text.length; i++) {
-        const cw = charWidth(text[i]);
-        if (acc + cw / 2 > target) { idx = i; break; }
-        acc += cw;
-        idx = i + 1;
-      }
-      if (idx <= 0 || idx >= text.length) { next.push(b); continue; }
-      // 只拆出一個中文字、右邊又接著中文 → 同一個詞被雜線切開，不要拆
-      if (idx === 1 && /[\u4e00-\u9fff]/.test(text[0]) && /[\u4e00-\u9fff]/.test(text[1])) { next.push(b); continue; }
-      // 整格是數字就完全不拆：拆成兩格假數字（「6」＋「46,219」）比不拆更糟，
-      // 整欄驗算會跟著錯。同列多個數字黏在一起的情況由上面的空白切分處理
-      if (!isNaN(Validator._num(text))) { next.push(b); continue; }
-      const left = text.slice(0, idx), right = text.slice(idx);
-      next.push({ ...b, text: left, x2: x, cx: (b.x1 + x) / 2, splitLine: true },
-        { ...b, text: right, x1: x, cx: (x + b.x2) / 2, splitLine: true });
-    }
-    boxes = next;
-  }
-  return boxes;
-}
-
-/* ---- 數字整理：全形、減號、千分位、常見 OCR 混淆字 ----
-   實拍最常見的兩種錯：逗號被讀成句點（25,000 → 25.000）、O 被讀成 0。
-   前者會讓 parseFloat 得到 25（整張表差一千倍），一定要在驗算前修掉。 */
-const FULLWIDTH_MAP = { '０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9',
-  '．':'.','，':',','－':'-','（':'(','）':')','％':'%','　':' ','＋':'+','／':'/','：':':' };
-const MINUS_VARIANTS = /[−–—﹣－‒]/g;
-const CONFUSABLES = { 'O':'0','o':'0','〇':'0','D':'0','Q':'0', 'l':'1','I':'1','|':'1','i':'1', 'S':'5','s':'5',
-  'B':'8', 'Z':'2','z':'2', 'G':'6', 'q':'9','g':'9', 'T':'7' };
-
-function toHalfWidth(s) {
-  return String(s ?? '').replace(/[\uff01-\uff5e　]/g, ch => FULLWIDTH_MAP[ch] || String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
-}
-
-// 「1.920.497」「3,766.807」這種：句點後面剛好三位一組 → 句點其實是千分位
-// 前後可能有括號（會計負數）、負號或幣別符號，只修中間純數字的部分
-function fixThousandDots(s) {
-  const t = String(s);
-  const pre = /^[-(（$]*/.exec(t)[0], post = /[)）%％]*$/.exec(t.slice(pre.length))[0];
-  const core = t.slice(pre.length, t.length - post.length);
-  if (!/^\d+[.,\d]*$/.test(core)) return t;
-  let fixed = core;
-  if (/^\d{1,3}(?:\.\d{3}){2,}$/.test(core)) fixed = core.replace(/\./g, ',');
-  else if (/^\d{1,3}(?:,\d{3})+\.\d{3}$/.test(core)) fixed = core.replace(/\./g, ',');
-  return pre + fixed + post;
-}
-
-/* 逐格整理；需要「這一欄是不是數字欄」的上下文來判斷 25.000 是 25 還是 25,000。 */
-function repairNumericCells(data, confidence) {
-  const repairs = [];
-  const out = data.map(r => r.slice());
-  const cols = Math.max(0, ...out.map(r => r.length));
-  const parse = Validator._num;
-  const numeric = [];
-  for (let c = 0; c < cols; c++) {
-    let n = 0, total = 0;
-    for (const row of out) {
-      const t = String(row[c] ?? '').trim();
-      if (!t) continue;
-      total++;
-      if (!isNaN(parse(t))) n++;
-    }
-    numeric[c] = total > 0 && n / total >= 0.5;
-  }
-  for (let r = 0; r < out.length; r++) {
-    for (let c = 0; c < (out[r] || []).length; c++) {
-      const orig = String(out[r][c] ?? '').trim();
-      if (!orig) continue;
-      let s = toHalfWidth(orig).replace(MINUS_VARIANTS, '-').trim();
-      // 「969,.524」逗號與句點黏在一起：多出來的那一個是雜訊
-      s = s.replace(/,\./g, ',').replace(/\.(?=,)/g, '');
-      // 數字後面黏著表格線／雜訊（「12,345 ]」「200,000|」）：去掉結尾非數字字元。
-      // 只動「去掉後整格就是數字」的情況，而且改完仍要通過驗算，錯了會被紅字抓出來
-      if (isNaN(parse(s))) {
-        const trimmed = s.replace(/[\s\]\)\|\}、，。」”'’;:；：!！?？>»]+$/g, '');
-        if (trimmed && !isNaN(parse(trimmed))) s = trimmed;
-      }
-      // 全形括號負數
-      s = fixThousandDots(s);
-      if (!isNaN(parse(s)) && /[A-Za-z]/.test(s) === false) {
-        // 只有數字、逗號、點、括號、負號：交給下面統一格式化
-      } else if (numeric[c] || /^[\dOolISBZGsqgT.,()\-\s]+$/.test(s)) {
-        // 混淆字只在地數字欄或有明顯數字骨架時才動手
-        const mapped = s.replace(/[A-Za-z〇|]/g, ch => CONFUSABLES[ch] ?? ch);
-        if (mapped !== s && !isNaN(parse(fixThousandDots(mapped)))) s = fixThousandDots(mapped);
-      }
-      // 單一組「25.000」：靠整欄的千分位習慣判斷
-      if (/^\d{1,3}\.\d{3}$/.test(s)) {
-        const colHasThousands = out.some((row, rr) => rr !== r && /^\d{1,3}(,\d{3})+$/.test(toHalfWidth(String(row[c] ?? '')).trim()));
-        if (colHasThousands && numeric[c]) s = s.replace('.', ',');
-      }
-      // 統一千分位：能解析的數字重新格式化（-1,234.5）
-      const n = parse(s);
-      if (!isNaN(n) && /^[\d,.\-()%$ ]+$/.test(s)) {
-        const body = s.replace(/[,$ ]/g, '');
-        if (/^-?\d+(\.\d+)?$/.test(body)) {
-          const dec = (body.split('.')[1] || '').length;
-          // 小數位數照原樣（1.50 不變成 1.5、1.23456 不被四捨五入），只補千分位
-          const digits = Math.min(dec, 20);
-          s = n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-        }
-      }
-      if (s !== orig) {
-        out[r][c] = s;
-        repairs.push({ r, c, from: orig, to: s });
-        if (confidence?.[r]) confidence[r][c] = Math.min(confidence[r][c] ?? 1, 0.9);
-      }
-    }
-  }
-  return { data: out, repairs };
-}
-
-// grid（可省略）：Worker 偵測到的表格格線 { v: [{a,b}], h: [{a,b}] }，直線 x = a + b*y、橫線 y = a + b*x
-function buildTable(words, grid) {
-  if (!words.length) return { data: [], confidence: [], boxes: [] };
-  const avg = (a, f) => a.reduce((s, v) => s + f(v), 0) / a.length;
-
-  // 偵測有時把同一列相鄰幾欄的數字框成一個框（文字是「50,000 25,264 8,692」）。
-  // 以空白切開後每段都是完整數字，就依字元位置等比例拆回多個框，後面才切得出欄
-  const vLines = grid?.v || [], hLines = grid?.h || [];
-  const wholeNum = t => !isNaN(Validator._num(t)) && /\d$/.test(t) && /^[-(（$\d]/.test(t);
-  words = words.flatMap(w => {
-    const parts = w.text.split(/\s+/).filter(Boolean);
-    if (parts.length < 2 || !parts.every(wholeNum)) return [w];
-    const per = (w.x2 - w.x1) / w.text.length;
-    let pos = 0;
-    return parts.map(text => {
-      const at = w.text.indexOf(text, pos);
-      pos = at + text.length;
-      const x1 = w.x1 + at * per, x2 = w.x1 + pos * per;
-      return { ...w, text, x1, x2, cx: (x1 + x2) / 2, split: true };
-    });
-  });
-
-  // 框跨過格線（右對齊項次緊貼左對齊科目）→ 依線拆回兩格
-  // PDF 文字層（exact）不拆：向量文字不會壓在真的格線上，跨過「線的延伸」的一定是
-  // 合併儲存格的表頭（「本年度預算數」橫跨金額與％兩欄），拆了反而變成「本年度預｜算數」
-  if (vLines.length && !grid?.exact) words = words.flatMap(w => splitBoxAtLine(w, vLines));
-
-  // 格線是最可靠的欄界：先記下每個框落在第幾條直線之間（seg），之後不跨線合併、也不跨線併欄
-  // 用轉正後的座標比對：線與文字都在同一張轉正圖上量的
-  // out：在表格上方（最上面那條橫線之上）。直線延伸出去會把標題「113年度…明細表」分到幾個 seg，
-  // 開頭的「113」又是數字，整列被當成資料列拿去切欄，多出只有標題碎片的空欄。
-  // 所以表格上方的字照距離合併（不管 seg），那幾列也不拿來切欄。
-  // 只看上方：很多報表只有表頭上下兩條線，資料列全在「最下面那條線」之下，不能當成表格外
-  // ponytail: 先只用在 PDF 文字層（exact）；OCR 路徑同理，但要跑過 bench 再放開
-  const top = hLines[0];
-  words = words.map(w => ({
-    ...w, ox: w.cx, oy: w.cy,
-    seg: vLines.reduce((n, l) => n + (l.a + l.b * w.cy < w.cx ? 1 : 0), 0),
-    out: !!grid?.exact && hLines.length >= 2 && w.cy < top.a + top.b * w.cx,
-  }));
-
-  // 校正歪斜：手機拍照很少完全水平。在 ±15° 內找出讓文字框「排成列」最整齊的角度
-  // （把 y 投影到直方圖，越集中分數越高），再把座標轉正後才分列
-  const binH = avg(words, w => w.h) / 2;
-  let skew = 0, bestScore = -1;
-  // grid.exact：PDF 文字層的座標是向量算的，沒有歪斜可校正（稀疏的表反而會被誤轉）
-  for (let deg = -15; !grid?.exact && deg <= 15; deg += 0.25) {
-    const t = deg * Math.PI / 180, sin = Math.sin(t), cos = Math.cos(t), bins = new Map();
-    for (const w of words) { const b = Math.round((w.cy * cos - w.cx * sin) / binH); bins.set(b, (bins.get(b) || 0) + 1); }
-    let score = 0;
-    for (const n of bins.values()) score += n * n;
-    if (score > bestScore || (score === bestScore && Math.abs(deg) < Math.abs(skew))) { bestScore = score; skew = deg; }
-  }
-  if (skew) {
-    const t = skew * Math.PI / 180, sin = Math.sin(t), cos = Math.cos(t);
-    words = words.map(w => {
-      const cx = w.cx * cos + w.cy * sin, cy = w.cy * cos - w.cx * sin, hw = (w.x2 - w.x1) / 2;
-      return { ...w, cx, cy, x1: cx - hw, x2: cx + hw };
-    });
-  }
-
-  // 依 y 中心分列（對微捲曲紙張：不同欄的水平鄰近框若垂直重疊，允許略大一點的 y 偏差）
-  const yTol = Math.max(avg(words, w => w.h) * 0.55, 6);
-  const rows = [];
-  let cur = [], lastCy = 0;
-  for (const w of [...words].sort((a, b) => a.cy - b.cy)) {
-    let sameRow = !cur.length || Math.abs(w.cy - lastCy) <= yTol;
-    if (!sameRow) {
-      const hasXOverlap = cur.some(c => Math.min(c.x2, w.x2) > Math.max(c.x1, w.x1));
-      if (!hasXOverlap) {
-        let nearest = cur[0], minDx = Infinity;
-        for (const c of cur) {
-          const dx = Math.abs(c.cx - w.cx);
-          if (dx < minDx) { minDx = dx; nearest = c; }
-        }
-        const yOverlap = Math.min(nearest.cy + nearest.h / 2, w.cy + w.h / 2) - Math.max(nearest.cy - nearest.h / 2, w.cy - w.h / 2);
-        if (Math.abs(w.cy - nearest.cy) <= yTol * 1.25 && yOverlap >= 0.25 * Math.min(w.h, nearest.h)) {
-          sameRow = true;
-        }
-      }
-    }
-    if (!sameRow) { rows.push(cur); cur = []; }
-    cur.push(w);
-    lastCy = avg(cur, c => c.cy);
-  }
-  rows.push(cur);
-
-  // 同列內相鄰文字框合併成 cell；信心取最小值
-  const cellRows = rows.map(row => {
-    const rowH = avg(row, w => w.h);
-    const gapTol = Math.max(rowH * 0.7, 8);
-    const isNum = t => !isNaN(Validator._num(t));
-    const cells = [];
-    for (const w of row.sort((a, b) => a.x1 - b.x1)) {
-      const last = cells[cells.length - 1];
-      // 兩個各自完整的數字不合併：欄位塞滿數字時（如 20,622,869 與 20,084,844）欄距可能比字高還小。
-      // 同一個數字被切開時，斷點會帶著逗號或小數點（「22,481,」+「607」），那種照舊合併
-      const twoNumbers = last && (w.split || w.x1 - last.x2 > rowH * 0.3)
-        && isNum(last.text) && isNum(w.text)
-        && !/[,，.\-(（]$/.test(last.text) && !/^[,，.)）%％]/.test(w.text);
-      // 兩個框在水平方向大幅重疊、其中一個的字又是另一個的一部分（殘字、重複偵測）：
-      // 以字多的那個為準，不要疊成「主持人費主」「200.0002」
-      const overlap = last ? Math.min(last.x2, w.x2) - Math.max(last.x1, w.x1) : 0;
-      const smallW = last ? Math.min(last.x2 - last.x1, w.x2 - w.x1) : 0;
-      const near = last && w.x1 - last.x2 <= gapTol;
-      // 大幅重疊（>50%）時不管在哪一欄都是重複偵測；只有「相接但沒重疊」才要求同欄
-      const dup = last && smallW > 0
-        && (last.splitLine || w.splitLine || Math.min(last.text.length, w.text.length) <= 2)
-        && (last.text.includes(w.text) || w.text.includes(last.text))
-        && (overlap > 0.5 * smallW || (last.seg === w.seg && near));
-      // 中文字之間不補空白（偵測常把一個詞切成數塊）
-      if (dup) {
-        const keep = w.text.length > last.text.length ? w.text : last.text;
-        const keepScore = w.text.length > last.text.length ? (w.score ?? 1) : last.score;
-        last.text = keep;
-        last.score = Math.min(keepScore, Math.max(last.score, w.score ?? 1));
-        last.x1 = Math.min(last.x1, w.x1);
-        last.x2 = Math.max(last.x2, w.x2);
-      } else if (last && !twoNumbers && (last.seg === w.seg || w.out) && w.x1 - last.x2 <= gapTol) {
-        last.text += (CJK.test(last.text.slice(-1)) || CJK.test(w.text[0]) ? '' : ' ') + w.text;
-        last.x2 = Math.max(last.x2, w.x2);
-        last.y1 = Math.min(last.y1, w.y1);
-        last.y2 = Math.max(last.y2, w.y2);
-        last.score = Math.min(last.score, w.score ?? 1);
-      } else {
-        cells.push({
-          text: w.text, x1: w.x1, x2: w.x2, y1: w.y1, y2: w.y2,
-          score: w.score ?? 1, seg: w.seg, splitLine: w.splitLine, out: w.out,
-        });
-      }
-    }
-    cells.forEach(c => { c.cx = (c.x1 + c.x2) / 2; });
-    return cells;
-  });
-
-  // 跨列對齊欄位：用「資料列之間沒有文字覆蓋的垂直空白帶」切欄。
-  // 表頭常置中、數字常右對齊，中心點分群會把兩者拆成不同欄；空白帶不會。
-  // 有格線時，每兩條直線之間各自切一次：線一定是欄界，線沒抓到的地方仍由空白帶補上
-  const numericRows = cellRows.filter(row => !row[0]?.out && row.some(c => !isNaN(Validator._num(c.text))));
-  const sample = numericRows.length ? numericRows : cellRows.filter(r => r.length >= 2);
-  const sampleRows = sample.length ? sample : cellRows;
-  const heights = words.map(w => w.h).sort((a, b) => a - b);
-  const medH = heights[heights.length >> 1] || 20;
-  const minGap = Math.max(medH * 0.8, 12);
-
-  // 回傳這一段（兩條直線之間）的欄界；段內沒有可用的文字就當成一欄
-  const bandsOf = seg => {
-    const segRows = sampleRows.map(row => row.filter(c => c.seg === seg));
-    const intervals = segRows.flatMap(row => row.map(c => [c.x1, c.x2])).sort((a, b) => a[0] - b[0]);
-    if (!intervals.length) return [-Infinity, Infinity];
-    const merged = [];
-    for (const [x1, x2] of intervals) {
-      const last = merged[merged.length - 1];
-      if (last && x1 <= last[1]) last[1] = Math.max(last[1], x2);
-      else merged.push([x1, x2]);
-    }
-    // 空白帶比 minGap 窄時，若至少兩列都有「相鄰兩格分居兩側」，仍算欄界：
-    // 同列合併時沒併起來的兩格本來就是不同格，整張表又都空著這一條，就是欄距很窄的兩欄
-    const straddled = (L, R) => segRows.filter(row =>
-      row.some((c, k) => k > 0 && row[k - 1].x2 <= L && c.x1 >= R)).length >= 2;
-    const bounds = [merged[0][0]];
-    for (let i = 1; i < merged.length; i++) {
-      const L = merged[i - 1][1], R = merged[i][0];
-      if (R - L >= minGap || straddled(L, R)) bounds.push((L + R) / 2);
-    }
-    bounds.push(merged[merged.length - 1][1]);
-    return bounds;
-  };
-
-  const allCells = cellRows.flat();
-  if (!allCells.length) return { data: [], confidence: [] };
-  const segMin = Math.min(...allCells.map(c => c.seg)), segMax = Math.max(...allCells.map(c => c.seg));
-  const segBounds = [], segOffset = [];
-  let ncols = 0;
-  for (let seg = segMin; seg <= segMax; seg++) {
-    segBounds[seg] = bandsOf(seg);
-    segOffset[seg] = ncols;
-    ncols += Math.max(segBounds[seg].length - 1, 1);
-  }
-
-  const colOf = cell => {
-    const bounds = segBounds[cell.seg];
-    let best = 0, bestOverlap = -1;
-    for (let i = 0; i < bounds.length - 1; i++) {
-      const overlap = Math.min(cell.x2, bounds[i + 1]) - Math.max(cell.x1, bounds[i]);
-      if (overlap > bestOverlap) { best = i; bestOverlap = overlap; }
-    }
-    if (bestOverlap <= 0) {
-      let bestDist = Infinity;
-      for (let i = 0; i < bounds.length - 1; i++) {
-        const d = Math.abs((bounds[i] + bounds[i + 1]) / 2 - cell.cx);
-        if (d < bestDist) { bestDist = d; best = i; }
-      }
-    }
-    return segOffset[cell.seg] + best;
-  };
-
-  const joinText = (a, b, sep) => !a ? b : a + (CJK.test(a.slice(-1)) || CJK.test(b[0]) ? sep : ' ') + b;
-  let outRows = cellRows.map((row, i) => {
-    const out = Array(ncols).fill('');
-    const conf = Array(ncols).fill(1);
-    // 每格在「轉正後」圖上的像素範圍：給「點某格 → 放大原圖對照」用
-    // （y 用整列的字框範圍，同一列的格子共用；x 用該格自己的字框）
-    const box = Array(ncols).fill(null);
-    // 字框有 y1/y2（合併後的 cell 也有）；歪斜校正只改 x，所以 y 直接用字框的
-    const y1r = row.length ? Math.min(...row.map(w => (w.y1 ?? (w.cy - (w.h || 0) / 2)))) : 0;
-    const y2r = row.length ? Math.max(...row.map(w => (w.y2 ?? (w.cy + (w.h || 0) / 2)))) : 0;
-    for (const c of row) {
-      const ci = colOf(c);
-      out[ci] = out[ci] ? out[ci] + ' ' + c.text : c.text;
-      conf[ci] = Math.min(conf[ci], Number.isFinite(c.score) ? c.score : 1);
-      // 優先用這一格自己的 y 範圍（合併後的 cell 也有），沒有才用整列——
-      // 用整列會把上下列的字一起框進對照圖，看起來很亂
-      const cy1 = Number.isFinite(c.y1) ? c.y1 : y1r;
-      const cy2 = Number.isFinite(c.y2) ? c.y2 : y2r;
-      const b = { x1: c.x1, x2: c.x2, y1: cy1, y2: cy2 };
-      const prev = box[ci];
-      box[ci] = prev
-        ? { x1: Math.min(prev.x1, b.x1), x2: Math.max(prev.x2, b.x2), y1: prev.y1, y2: prev.y2 }
-        : b;
-    }
-    // 這一列落在第幾條橫線之間（0 與 hLines.length 表示在表格外）
-    const x = avg(rows[i], w => w.ox), y = avg(rows[i], w => w.oy);
-    return { out, conf, box, band: hLines.reduce((n, l) => n + (l.a + l.b * x < y ? 1 : 0), 0) };
-  });
-
-  // 橫線之間有兩行字（表頭或科目名稱換行：「臺灣大學(大」＋「學)」）→ 併回同一列。
-  // 條件：橫線幾乎每列都有（只有表頭線與底線的表，線之間本來就是很多列），
-  // 而且這幾行最多只有一行帶數字（兩行都有數字就是兩筆資料，只是中間的線沒抓到）
-  const inside = outRows.filter(r => r.band > 0 && r.band < hLines.length);
-  if (hLines.length >= 3 && new Set(inside.map(r => r.band)).size >= inside.length * 0.6) {
-    const hasNum = r => r.out.some(t => !isNaN(Validator._num(t)));
-    const groups = [];
-    for (const r of outRows) {
-      const g = groups[groups.length - 1];
-      if (g && g[0].band === r.band && r.band > 0 && r.band < hLines.length) g.push(r);
-      else groups.push([r]);
-    }
-    outRows = groups.flatMap(g => {
-      if (g.length < 2 || g.filter(hasNum).length > 1) return g;
-      const first = g[0];
-      for (const r of g.slice(1)) {
-        r.out.forEach((t, c) => { if (t) first.out[c] = joinText(first.out[c], t, ''); });
-        r.conf.forEach((v, c) => { first.conf[c] = Math.min(first.conf[c], v); });
-        r.box.forEach((b, c) => {
-          if (!b) return;
-          first.box[c] = first.box[c]
-            ? { x1: Math.min(first.box[c].x1, b.x1), x2: Math.max(first.box[c].x2, b.x2),
-                y1: Math.min(first.box[c].y1, b.y1), y2: Math.max(first.box[c].y2, b.y2) }
-            : b;
-        });
-      }
-      return [first];
-    });
-  }
-
-  // 表格上方的標題（「113年度…明細表」）不是表格的一列：有橫線、下一列就在線下、
-  // 而且這一列沒有任何數字時，當成標題丟掉
-  while (hLines.length >= 2 && outRows.length > 2
-    && outRows[0].band === 0 && outRows[1].band > 0
-    && !outRows[0].out.some(t => !isNaN(Validator._num(t)))) {
-    outRows.shift();
-  }
-
-  // 去掉整欄空白：頁面邊緣、陰影或紙張摺線被當成格線時，會多切出空欄；
-  // 整個欄（含表頭）都沒字就是雜訊，去掉才不會讓表頭與數字左右錯開一格
-  const emptyCols = [];
-  for (let c = 0; c < ncols; c++) if (outRows.every(r => !r.out[c])) emptyCols.push(c);
-  if (emptyCols.length) {
-    outRows = outRows.map(r => ({
-      ...r,
-      out: r.out.filter((_, c) => !emptyCols.includes(c)),
-      conf: r.conf.filter((_, c) => !emptyCols.includes(c)),
-      box: r.box.filter((_, c) => !emptyCols.includes(c)),
-    }));
-  }
-  // 再去掉頭尾整欄空白
-  let from = 0, keep = Math.max(1, ncols - emptyCols.length);
-  while (keep > 1 && outRows.every(r => !r.out[keep - 1])) keep--;
-  while (from < keep - 1 && outRows.every(r => !r.out[from])) from++;
-
-  return {
-    data: outRows.map(r => r.out.slice(from, keep)),
-    confidence: outRows.map(r => r.conf.slice(from, keep).map(s => Math.round(s * 1000) / 1000)),
-    boxes: outRows.map(r => r.box.slice(from, keep)),
-  };
 }
 
 // 辨識完成後收起原圖與框選（要重新框選或換精度時再展開）
@@ -2189,6 +1344,7 @@ async function analyzeImage() {
       // 對照用的底圖：文字座標與頁面圖同一套（先前若跑過 OCR，底圖已被換成轉正後的縮圖）
       try { ocrPreview?.close?.(); } catch (e) { /* 忽略 */ }
       ocrPreview = null;
+      ocrPreviewBlob = pendingText.blob || null;
       ocrPreviewScale = 1;
       if (pendingText.blob) {
         try { ocrPreview = await createImageBitmap(pendingText.blob); } catch (e) { /* 沒有底圖就用列表 */ }
@@ -2201,7 +1357,7 @@ async function analyzeImage() {
     const built = structured
       ? { data: structured.grid, confidence: structured.conf, boxes: structured.boxes, spans: structured.spans }
       : buildTable(words, ocrGrid);
-    const repaired = repairNumericCells(built.data, built.confidence);
+    const repaired = repairNumericCells(built.data, built.confidence, headerRowCount());
     const stripped = stripGarbageText(repaired.data, headerRowCount());
     rememberTemplate();   // 換表之前先記下上一張的驗算設定
     tableData = stripped.data;
@@ -2246,8 +1402,8 @@ async function analyzeImage() {
     const lowCount = lowConfidenceCount();
     const lowNote = lowCount ? `　⚠️ ${lowCount} 格低信心（橘線），請按「🔎 核對低信心」逐格確認。` : '';
     const fixNote = cellRepairs.size ? `　🔧 ${cellRepairs.size} 格已自動整理（虛線標示，游標移上去看原辨識）。` : '';
-    const retryBtn = (blurry || lowCount > 3) && ocrQuality !== 'medium'
-      ? ' <button class="btn btn-warn btn-sm" onclick="retryHighAccuracy()">🔁 用高精度模型重辨識</button>' : '';
+    const retryBtn = (blurry || lowCount > 3) && ocrQuality === 'tiny'
+      ? ' <button class="btn btn-warn btn-sm" onclick="retryStandardModel()">🔁 改用標準模型重辨識</button>' : '';
     renderSummary(blurry
       ? {
         kind: 'warn',
@@ -2266,6 +1422,8 @@ async function analyzeImage() {
     runSmartTotals(true);
     applyTemplate();
     setPreviewCollapsed(true);
+    openInputBar(false);
+    syncAppLayout();
     if (batch.length > 1 && batchIndex >= 0) {
       batch[batchIndex].status = batchStatusOf();
       batch[batchIndex].stats = currentTableStats();
@@ -2276,6 +1434,8 @@ async function analyzeImage() {
     document.getElementById('template-note').style.display = 'none';
     document.getElementById('summary').innerHTML = `<div class="summary-banner err">❌ ${escapeHtml(err.message)}</div>`;
     ws.style.display = 'block';
+    openInputBar(false);
+    syncAppLayout();
     if (batch.length > 1 && batchIndex >= 0) { batch[batchIndex].status = 'error'; renderBatchBar(); }
   } finally {
     analyzing = false;
@@ -2293,53 +1453,7 @@ async function analyzeImage() {
   }
 }
 
-/* ---------- 文字模式：拍審查意見 → OCR 全文 → 萃取「…元」金額 → 加總 ----------
-   萃取規則照搬 budget-opinion-reviewer 的 TextExtractor（逐句、每個「元」切一段）。 */
-function wordsToText(words) {
-  // 依 y 中心把字框分行（與上一框高度重疊過半就算同一行），行內由左到右
-  const sorted = [...words].sort((a, b) => a.cy - b.cy);
-  const lines = [];
-  for (const w of sorted) {
-    const line = lines[lines.length - 1];
-    if (line && Math.abs(w.cy - line.cy) < Math.min(w.h, line.h) * 0.5) { line.ws.push(w); }
-    else lines.push({ cy: w.cy, h: w.h, ws: [w] });
-  }
-  // 整段接起來不換行：段落折行常把金額切成兩半（「1,430」｜「萬3千元」）
-  return lines.map(l => l.ws.sort((a, b) => a.x1 - b.x1).map(w => w.text).join('')).join('')
-    // OCR 常把千分位逗號讀成點：「5.431萬」→「5,431萬」（點後剛好 3 位且接單位才改，1.22% 不動）
-    .replace(/(\d)\.(\d{3})(?=[萬億兆千仟元])/g, '$1,$2');
-}
-
-function chineseMoneyParts(s) {
-  const unit = { 兆: 1e12, 億: 1e8, 萬: 1e4, 千: 1e3, 仟: 1e3, 百: 100, 佰: 100, 拾: 10 };
-  let total = 0;
-  for (const m of s.matchAll(/([\d.]+)([兆億萬千仟百佰拾])?/g)) total += parseFloat(m[1]) * (unit[m[2]] || 1);
-  return total;
-}
-
-function extractAmounts(text) {
-  const items = [];
-  for (let line of text.split(/\n+/)) {
-    line = line.trim();
-    if (!line) continue;
-    line = line.replace(/^審核意見[：:,\s]*/, '');
-    for (let sentence of line.split(/(?<=[。；])/)) {
-      sentence = sentence.trim().replace(/^[,，]/, '').trim();
-      if (!sentence.includes('元')) continue;
-      const parts = sentence.split('元');
-      const segs = parts.slice(0, -1).map(p => p + '元');
-      if (parts[parts.length - 1].trim()) segs[segs.length - 1] += parts[parts.length - 1];
-      for (const seg of segs) {
-        const clean = toHalfWidth(seg).replace(/[,，\s]/g, '');
-        const m = clean.match(/([0-9.兆億萬千仟百佰拾]+)元/);
-        const v = m && /[0-9]/.test(m[1]) ? chineseMoneyParts(m[1]) : 0;
-        items.push({ text: seg, value: v > 0 ? v : null });
-      }
-    }
-  }
-  return items;
-}
-
+/* ---------- 文字模式：拍審查意見 → OCR 全文 → 萃取「…元」金額 → 加總 ---------- */
 let textItems = [], textSigns = [];   // textSigns[i]: 1 加、-1 減、0 不計
 function renderTextAmounts() {
   textItems = extractAmounts(document.getElementById('text-input').value);
@@ -2358,17 +1472,6 @@ function renderTextAmounts() {
     `顯示 ${shown.length}／${textItems.length} 筆，計入 ${shown.filter(i => textSigns[i]).length} 筆，合計 ${fmtNum(sum)} 元`;
   updateFloat();
 }
-function zhMoney(n) {   // 1234567 → 123萬4,567元；負數 → 短絀…（照搬 reviewer）
-  if (!n) return '0元';
-  let a = Math.abs(n);
-  const parts = [];
-  for (const [u, k] of [['兆', 1e12], ['億', 1e8], ['萬', 1e4]]) {
-    const q = Math.floor(a / k); a %= k;
-    if (q) parts.push(q.toLocaleString('zh-Hant') + u);
-  }
-  if (a) parts.push(a % 1000 === 0 ? a / 1000 + '千' : a.toLocaleString('zh-Hant'));
-  return (n < 0 ? '短絀' : '') + parts.join('') + '元';
-}
 let floatClosed = false;
 function updateFloat() {
   // 顯示中的是文字結果 → 加文字項目；否則加表格裡點選的格子
@@ -2377,20 +1480,34 @@ function updateFloat() {
     ? textItems.map((it, i) => (it.value || 0) * textSigns[i]).filter(v => v)
     : [...cellPicks].map(([k, s]) => { const [r, c] = k.split(',').map(Number); return (Validator._num(tableData[r]?.[c]) || 0) * s; }).filter(v => v);
   const total = signed.reduce((a, v) => a + v, 0);
-  document.getElementById('text-float-num').textContent = fmtNum(total);
-  document.getElementById('text-float-zh').textContent = zhMoney(total);
+  const numText = fmtNum(total);
+  const zhText = zhMoney(total);
+  document.getElementById('text-float-num').textContent = numText;
+  document.getElementById('text-float-zh').textContent = zhText;
   let info = `已選 ${signed.length} 個項目`;
   // ponytail: 只處理「一正一負兩筆」這個唯一有明確意義的比例情境（同 reviewer）
   if (signed.length === 2 && signed[0] * signed[1] < 0) {
     info += `（差異為負數金額的 ${(total / Math.abs(Math.min(...signed)) * 100).toFixed(2)}%）`;
   }
   document.getElementById('text-float-info').textContent = info;
+  const inNum = document.getElementById('text-inline-num');
+  if (inNum) inNum.textContent = numText;
+  const inZh = document.getElementById('text-inline-zh');
+  if (inZh) inZh.textContent = zhText;
+  const inInfo = document.getElementById('text-inline-info');
+  if (inInfo) inInfo.textContent = info;
   const tableOn = document.getElementById('workspace').style.display === 'block' && (pickMode || cellPicks.size);
   document.getElementById('text-float').style.display = !floatClosed && (textOn || tableOn) ? 'block' : 'none';
 }
 function hideTextFloat() { floatClosed = true; updateFloat(); }
 (() => {   // 拖曳（滑鼠與觸控都走 pointer events）
   const box = document.getElementById('text-float'), handle = document.getElementById('text-float-handle');
+  const clampBox = () => {
+    if (box.style.display === 'none' || !box.style.left) return;
+    const r = box.getBoundingClientRect();
+    box.style.left = Math.max(0, Math.min(innerWidth - r.width, parseFloat(box.style.left) || r.left)) + 'px';
+    box.style.top = Math.max(0, Math.min(innerHeight - r.height, parseFloat(box.style.top) || r.top)) + 'px';
+  };
   handle.addEventListener('pointerdown', (e) => {
     if (e.target.tagName === 'BUTTON') return;
     const r = box.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
@@ -2400,16 +1517,36 @@ function hideTextFloat() { floatClosed = true; updateFloat(); }
       box.style.top = Math.max(0, Math.min(innerHeight - r.height, ev.clientY - dy)) + 'px';
       box.style.right = box.style.bottom = 'auto';
     };
+    const stop = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', stop);
+      handle.removeEventListener('pointercancel', stop);
+    };
     handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', () => handle.removeEventListener('pointermove', move), { once: true });
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
   });
+  window.addEventListener('resize', clampBox);
 })();
-// 表格裡直接改某一筆：寫回上面的全文（替換該段第一次出現處）再重算，全文永遠是唯一的資料來源
+// 表格裡直接改某一筆：依精準區間寫回上面的全文再重算，全文永遠是唯一的資料來源
 function editTextItem(i, td) {
-  const old = textItems[i]?.text, now = td.innerText.replace(/\n/g, '').trim();
-  if (old == null || now === old.trim()) return;
+  const item = textItems[i];
+  const now = td.innerText.replace(/\n/g, '').trim();
+  if (!item || now === item.text.trim()) return;
   const ta = document.getElementById('text-input');
-  ta.value = ta.value.replace(old, now);
+  const oldLen = textItems.length;
+  const oldSigns = textSigns.slice();
+  ta.value = replaceTextSpan(ta.value, item, now);
+  const newItems = extractAmounts(ta.value);
+  const delta = newItems.length - oldLen;
+  if (delta !== 0) {
+    textSigns = newItems.map((_, idx) => {
+      if (idx < i) return oldSigns[idx] ?? 0;
+      if (idx === i) return oldSigns[i] ?? 0;
+      if (idx - delta > i) return oldSigns[idx - delta] ?? 0;
+      return 0;
+    });
+  }
   renderTextAmounts();
 }
 function cycleTextSign(i) {
@@ -2417,42 +1554,90 @@ function cycleTextSign(i) {
   renderTextAmounts();
 }
 
+async function flipImage180(file) {
+  let bm;
+  try {
+    bm = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch (e) {
+    bm = await createImageBitmap(file);
+  }
+  try {
+    const w = bm.width, h = bm.height;
+    if (typeof OffscreenCanvas !== 'undefined') {
+      const c = new OffscreenCanvas(w, h), g = c.getContext('2d');
+      g.translate(w, h); g.rotate(Math.PI); g.drawImage(bm, 0, 0);
+      return await c.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.translate(w, h); g.rotate(Math.PI); g.drawImage(bm, 0, 0);
+    return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+  } finally {
+    bm.close();
+  }
+}
+
 async function analyzeText() {
+  if (batchRestored && !analyzing && batch[batchIndex]) {
+    forceAuto = true;
+    loadFile(batch[batchIndex].file, { fromBatch: true, page: batch[batchIndex].page });
+    return;
+  }
   if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
   if (analyzing) return;
   analyzing = true;
+  const file = currentFile;
+  let stale = false;
   const spinner = document.getElementById('spinner');
+  const qualityEl = document.getElementById('ocr-quality');
+  document.getElementById('workspace').style.display = 'none';
+  document.getElementById('text-card').style.display = 'none';
+  document.getElementById('text-float').style.display = 'none';
   spinner.style.display = 'flex';
+  document.getElementById('analyze-btn').disabled = true;
+  if (qualityEl) qualityEl.disabled = true;
   try {
     let words;
     if (pendingText && useTextLayer) words = filterWordsByQuad(pendingText.words, quad, pendingText.size);
     else {
-      words = await ocrWords(currentFile, quad, true);
+      words = await ocrWords(file, quad, true);
+      if (currentFile !== file) { stale = true; return; }
       // 照片拍倒了（紙放反）讀出來是亂碼：信心偏低就轉 180° 再讀一次，取信心高的
       if (ocrConfidence < 0.85) {
         const conf = ocrConfidence;
-        const bm = await createImageBitmap(currentFile);
-        const c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
-        g.translate(bm.width, bm.height); g.rotate(Math.PI); g.drawImage(bm, 0, 0); bm.close();
-        const rotated = await c.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+        document.getElementById('spinner-text').textContent = '信心偏低，轉正 180° 再辨識一次…';
+        const rotated = await flipImage180(file);
+        if (currentFile !== file) { stale = true; return; }
         const flipped = await ocrWords(rotated, quad.map(([x, y]) => [1 - x, 1 - y]), true);
+        if (currentFile !== file) { stale = true; return; }
         if (ocrConfidence > conf) words = flipped; else ocrConfidence = conf;
       }
     }
+    if (currentFile !== file) { stale = true; return; }
     document.getElementById('text-input').value = wordsToText(words);
     textSigns = [];
     renderTextAmounts();
     const card = document.getElementById('text-card');
-    document.getElementById('workspace').style.display = 'none';   // 兩種結果不同時出現
     card.style.display = 'block';
     floatClosed = false;
     updateFloat();
+    setPreviewCollapsed(true);
+    openInputBar(false);
+    syncAppLayout();
     card.scrollIntoView({ block: 'start' });
   } catch (err) {
+    if (currentFile !== file) { stale = true; return; }
     alert('文字辨識失敗：' + err.message);
   } finally {
     analyzing = false;
     spinner.style.display = 'none';
+    document.getElementById('analyze-btn').disabled = false;
+    if (qualityEl) qualityEl.disabled = false;
+    const rerun = stale && analyzeQueued;
+    analyzeQueued = false;
+    if (rerun) runAnalyze();
+    else if (!stale) analyzeDone?.();
   }
 }
 
@@ -2460,6 +1645,12 @@ function resetAll() {
   rememberTemplate();   // 「重新辨識」通常就是要換下一張：設定先記下來
   document.getElementById('preview-wrap').style.display = 'none';
   document.getElementById('workspace').style.display = 'none';
+  document.getElementById('text-card').style.display = 'none';
+  document.getElementById('paste-panel').style.display = 'none';
+  const ti = document.getElementById('text-input');
+  if (ti) ti.value = '';
+  textItems = [];
+  textSigns = [];
   document.getElementById('file-input').value = '';
   currentFile = null;
   tableData = [];
@@ -2473,11 +1664,19 @@ function resetAll() {
   undoStack.length = 0;      // 換下一張表，上一張的復原紀錄不該留著
   cellBoxes = [];
   tableExact = false;
+  ocrPreviewBlob = null;
+  try { ocrPreview?.close?.(); } catch (e) {}
+  ocrPreview = null;
   hideCellPeek();
   reviewPos = -1;
   renderUndoButton();
   clearSmart();
   clearSelections();
+  manualTrayOpen = false;
+  pickMode = false;
+  openInputBar(false);
+  updateFloat();
+  syncAppLayout();
 }
 
 /* =============================================================
@@ -2494,6 +1693,9 @@ function lowConfidenceCount() {
 
 function renderTable() {
   const table = document.getElementById('data-table');
+  const active = document.activeElement;
+  const focusCol = active?.matches?.('#data-table th[data-col]') ? active.dataset.col : null;
+  const focusRow = active?.matches?.('#data-table td.row-head[data-row]') ? active.dataset.row : null;
   const cols = maxCols();
   const headerRowEl = document.getElementById('headerRow');
   const endRowEl = document.getElementById('endRow');
@@ -2512,9 +1714,10 @@ function renderTable() {
   }
   html += '</tr></thead><tbody>';
 
+  const hdrRows = headerRowCount();
   for (let r = 0; r < tableData.length; r++) {
     const rowOut = endRowVal > 0 && r >= endRowVal;
-    const rcls = rowOut ? 'row-out' : '';
+    const rcls = [r < hdrRows ? 'is-header' : '', rowOut ? 'row-out' : ''].filter(Boolean).join(' ');
     const rowHeadCls = rowClass(r);
     html += `<tr class="${rcls}"><td class="row-head ${rowHeadCls}" data-row="${r}" tabindex="0" role="button" aria-label="第 ${r + 1} 列" onclick="onRowClick(${r}, event)">${r + 1}</td>`;
     for (let c = 0; c < cols; c++) {
@@ -2548,13 +1751,15 @@ function renderTable() {
       let spanAttr = '';
       if (span && span.rs > 1) spanAttr += ` rowspan="${span.rs}"`;
       if (span && span.cs > 1) spanAttr += ` colspan="${span.cs}"`;
-      html += `<td class="${cellCls}${span ? ' cell-merged' : ''}" data-r="${r}" data-c="${c}"${spanAttr} contenteditable="true"${numeric ? ' inputmode="decimal"' : ''}${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
+      html += `<td class="${cellCls}${span ? ' cell-merged' : ''}${!numeric ? ' cell-text' : ''}" data-r="${r}" data-c="${c}"${spanAttr} contenteditable="true"${numeric ? ' inputmode="decimal"' : ''}${title} onblur="onCellEdit(this)">${escapeHtml(v)}</td>`;
     }
     html += '</tr>';
   }
   html += '</tbody>';
   table.innerHTML = html;
   applyPicks();
+  if (focusCol !== null) table.querySelector(`th[data-col="${focusCol}"]`)?.focus({ preventScroll: true });
+  else if (focusRow !== null) table.querySelector(`td.row-head[data-row="${focusRow}"]`)?.focus({ preventScroll: true });
 }
 
 /* ---------- 點格加總：與文字模式共用浮動加總視窗 ---------- */
@@ -2569,12 +1774,12 @@ function applyPicks() {
     td.classList.toggle('pick-minus', s === -1);
     td.contentEditable = pickMode ? 'false' : 'true';
   });
-  document.getElementById('pick-btn').classList.toggle('btn-warn', pickMode);
+  syncToolbarState();
   updateFloat();
 }
 function togglePickMode() {
   pickMode = !pickMode;
-  if (pickMode) floatClosed = false;
+  if (pickMode) { floatClosed = false; manualTrayOpen = false; }
   applyPicks();
 }
 document.getElementById('data-table').addEventListener('click', (e) => {
@@ -2617,7 +1822,9 @@ function rowClass(r) {
 function setSelMode(role) {
   selMode = role;
   document.querySelectorAll('#sel-mode .seg').forEach((b) => {
-    b.classList.toggle('on', +b.dataset.role === role);
+    const active = +b.dataset.role === role;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
   });
   const hint = document.getElementById('sel-mode-hint');
   if (hint) hint.textContent = role === 1 ? '點欄號／列號 → 加項（最後點的那一個自動當「等於」）'
@@ -2627,103 +1834,14 @@ function setSelMode(role) {
     : '點欄號／列號 → 指定「等於」（合計不在最後時才需要點）';
 }
 
-function setRole(kind, idx, role) {
-  const k = sel[kind];
-  k.mul = k.mul || []; k.div = k.div || []; k.order = k.order || [];
-  const cur = k.total === idx ? 0
-    : k.plus.includes(idx) ? 1
-    : k.minus.includes(idx) ? -1
-    : k.mul.includes(idx) ? 2
-    : k.div.includes(idx) ? -2
-    : null;
-  k.plus = k.plus.filter(i => i !== idx);
-  k.minus = k.minus.filter(i => i !== idx);
-  k.mul = k.mul.filter(i => i !== idx);
-  k.div = k.div.filter(i => i !== idx);
-  k.order = k.order.filter(i => i !== idx);
-  if (k.total === idx) k.total = null;
-  if (cur === role) return;             // 再點一次同角色 → 取消
-  // 乘除只有 3 個數（被乘數、乘數、積／被除數、除數、商），不跟加減或另一種運算混用：
-  // 換運算就清掉這個方向原本的選取；已經滿 3 個就不再加
-  const isOp = r => r === 2 || r === -2;
-  const curOp = k.mul.length ? 2 : k.div.length ? -2 : null;
-  if (role !== 0 && (isOp(role) || curOp) && role !== curOp) {
-    Object.assign(k, emptySel(), { total: k.total });
-  }
-  if ((isOp(role) || (role === 0 && curOp)) && selCount(kind) >= 3) return 'full';
-  if (role === 0) k.total = idx;
-  else {
-    if (role === 1) k.plus.push(idx);
-    else if (role === -1) k.minus.push(idx);
-    else if (role === 2) k.mul.push(idx);
-    else if (role === -2) k.div.push(idx);
-    k.order.push(idx);
-  }
-}
-
-function removeSel(kind, idx) {
-  const k = sel[kind];
-  k.plus = k.plus.filter(i => i !== idx);
-  k.minus = k.minus.filter(i => i !== idx);
-  if (k.mul) k.mul = k.mul.filter(i => i !== idx);
-  if (k.div) k.div = k.div.filter(i => i !== idx);
-  if (k.order) k.order = k.order.filter(i => i !== idx);
-  if (k.total === idx) k.total = null;
-}
-
-// Shift＋點：把前一個到這一個整段都設成「加項」
-function addRange(kind, idx) {
-  const k = sel[kind];
-  k.mul = k.mul || []; k.div = k.div || []; k.order = k.order || [];
-  const ordered = k.order.length ? k.order : [...k.plus, ...k.minus, ...k.mul, ...k.div];
-  const anchor = ordered.slice(-1)[0];
-  // 乘除固定 3 個，不支援整段選取
-  if (anchor === undefined || k.mul.length || k.div.length || Math.abs(selMode) === 2) return setRole(kind, idx, selMode);
-  const lo = Math.min(anchor, idx), hi = Math.max(anchor, idx);
-  for (let i = lo; i <= hi; i++) {
-    if (i === k.total || k.plus.includes(i) || k.minus.includes(i) || k.mul.includes(i) || k.div.includes(i)) continue;
-    k.plus.push(i);
-    k.order.push(i);
-  }
-}
-
-function selCount(kind) {
-  const k = sel[kind];
-  return k.plus.length + k.minus.length + (k.mul?.length || 0) + (k.div?.length || 0) + (k.total !== null ? 1 : 0);
-}
-// 可以驗算了嗎：加減至少 2 個（1 加項＋1 合計）；乘除要剛好 3 個
-function selReady(kind) {
-  const k = sel[kind];
-  return (k.mul?.length || k.div?.length) ? selCount(kind) === 3 : selCount(kind) >= 2;
-}
-/* 預設手勢就是「一直點欄號都是加項，最後點的那一個是等於」：
- * 不必先回托盤把角色切成「＝」。只有合計欄不在最後（例如合計在中間）
- * 才需要明確指定，指定後就以指定的為準。 */
-function autoTotalIndex(kind) {
-  const k = sel[kind];
-  if (k.total !== null) return null;                  // 已明確指定
-  const ordered = k.order?.length ? k.order : [...k.plus, ...k.minus, ...(k.mul || []), ...(k.div || [])];
-  return ordered.length >= 2 ? ordered[ordered.length - 1] : null;
-}
-
-// 給 Validator 用：運算項在前、合計在最後；沒有指定合計時沿用最後選的那一個
-function selIndices(kind) {
-  const k = sel[kind];
-  const auto = autoTotalIndex(kind);
-  const all = [...k.plus, ...k.minus, ...(k.mul || []), ...(k.div || [])];
-  const idx = all.filter(i => i !== auto);
-  if (k.total !== null) idx.push(k.total);
-  else if (auto !== null) idx.push(auto);
-  return idx;
-}
-function selSigns(kind) {
-  const m = new Map();
-  sel[kind].plus.forEach(i => m.set(i, 1));
-  sel[kind].minus.forEach(i => m.set(i, -1));
-  (sel[kind].mul || []).forEach(i => m.set(i, 2));
-  (sel[kind].div || []).forEach(i => m.set(i, -2));
-  return m;
-}
+function setRole(kind, idx, role) { return setRoleOn(sel, kind, idx, role); }
+function removeSel(kind, idx) { return removeSelOn(sel, kind, idx); }
+function addRange(kind, idx) { return addRangeOn(sel, kind, idx, selMode); }
+function selCount(kind) { return selCountOf(sel, kind); }
+function selReady(kind) { return selReadyOf(sel, kind); }
+function autoTotalIndex(kind) { return autoTotalIndexOf(sel, kind); }
+function selIndices(kind) { return selIndicesOf(sel, kind); }
+function selSigns(kind) { return selSignsOf(sel, kind); }
 
 // 改完格子直接點欄號／列號：mousedown 時先不讓格子失焦（見下方 mousedown 監聽），
 // 改在 click 裡先存檔。否則 blur → 重繪表格發生在按下與放開之間，這一下點擊會被吃掉
@@ -2736,6 +1854,8 @@ const OP_FULL_MSG = '⚠️ 乘除只能選 3 個（被乘數、乘數、積／�
 function onColClick(c, ev) {
   commitEditingCell();
   clearSmart();   // 手動選取時改用驗算角色
+  manualTrayOpen = true;
+  syncToolbarState();
   useManualMode();   // 自動模式下點欄號＝你要自己指定，切回手動才不會「點了沒反應」
   const res = ev && ev.shiftKey ? addRange('col', c) : setRole('col', c, selMode);
   if (res === 'full') { renderSummary({ kind: 'warn', text: OP_FULL_MSG }); return; }
@@ -2744,6 +1864,8 @@ function onColClick(c, ev) {
 function onRowClick(r, ev) {
   commitEditingCell();
   clearSmart();
+  manualTrayOpen = true;
+  syncToolbarState();
   useManualMode();
   const res = ev && ev.shiftKey ? addRange('row', r) : setRole('row', r, selMode);
   if (res === 'full') { renderSummary({ kind: 'warn', text: OP_FULL_MSG }); return; }
@@ -2776,6 +1898,8 @@ function afterSelectionChange() {
   } else if (hadResult) {
     renderSummary({ kind: 'info', text: '已取消選取。至少要有「1 個加項 ＋ 1 個合計」才會驗算。' });
   }
+  syncToolbarState();
+  syncAsideLayout();
 }
 
 // 格子編輯完（blur）：寫回 tableData 並重新驗算
@@ -2792,15 +1916,18 @@ function onCellEdit(td) {
   while (cellConfidence[r].length <= c) cellConfidence[r].push(1);
   cellConfidence[r][c] = 1;   // 人工確認過，不再算低信心
   cellRepairs.delete(r + ',' + c);   // 人工改過，「原辨識」的提示已不適用
-  // 手打的整數也補千分位（25000 → 25,000），跟 OCR 結果和驗算的顯示一致
+  // 手打的數字也補千分位（25000 → 25,000），表頭的西元年份 2024 維持原樣
   const plain = newVal.replace(/\s/g, '');
-  if (/^-?\d{4,}(\.\d+)?$/.test(plain)) {
+  const hdr = headerRowCount();
+  const isAmountCol = tableData.length <= hdr
+    || isAmountColumn(tableData.slice(hdr).map(row => String(row?.[c] ?? '')));
+  if (/^-?\d{4,}(\.\d+)?$/.test(plain) && !(r < hdr && /^(19|20)\d{2}$/.test(plain)) && (r >= hdr || isAmountCol)) {
     const n = Validator._num(plain);
     if (!isNaN(n)) { tableData[r][c] = n.toLocaleString('en-US', { maximumFractionDigits: 20 }); td.innerText = tableData[r][c]; }
   }
   renderReviewButton();
   if (smartActive) { runSmartTotals(); return; }
-  smartUnparsed = unparsedNumericCells(tableData);   // 修好的格子不再標成「不像數字」
+  smartUnparsed = unparsedNumericCells(tableData, hdr);   // 修好的格子不再標成「不像數字」
   // 編輯後依目前選取重新驗算，摘要與錯誤清單才會跟表格一致
   afterSelectionChange();
 }
@@ -2846,6 +1973,8 @@ function clearSelections() {
   renderSelectionTray();
   if (tableData.length) renderTable();
   renderSummary({ kind: 'info', text: '選取已重置。' });
+  syncToolbarState();
+  syncAsideLayout();
 }
 
 /* =============================================================
@@ -2861,95 +1990,13 @@ function clearSmart() {
   smartVoucher = null;
   const el = document.getElementById('smart-note');
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
-}
-
-/* 數字欄裡「有字但不是數字」的格：這些格會被排除在加總外，若不講清楚，
-   驗算就會冒出一堆假錯誤（表格明明對，卻顯示合計不符） */
-// 金額欄的長相：純數字、可帶千分位／小數／括號負數／幣別符號。
-// 項次欄（1、1-1、2、2-1…）也會被 _num 解析成數字，但它不是金額欄，
-// 拿它去驗算或把「小」「2-1文」當成壞數字都只是雜訊
-const AMOUNT_SHAPE = /^[-(（$]?\d[\d,]*(?:\.\d+)?[)）%]?$/;
-const NO_VALUE = /^[-–—－‐—/]+$/;   // 破折號／斜線＝這一格沒值，不算「看不懂」
-function isAmountColumn(values) {
-  const vals = values.map(v => String(v ?? '').trim())
-    .filter(v => v && !NO_VALUE.test(v.replace(/\s/g, '')));
-  if (vals.length < 2) return false;
-  // 除了純數字，也要認「幣別＋數字」這種實際 OCR 會吐出來的樣子：
-  // 實拍單欄「總金額」表整欄都是 'NT$ 122,226'、'NTS 12,041'，
-  // 用 AMOUNT_SHAPE 逐字比對會讓整欄不算金額欄 → 連「最後一列是合計」都驗不到
-  const amounts = vals.filter(v => AMOUNT_SHAPE.test(v.replace(/\s/g, '')) || !isNaN(Validator._num(v)));
-  return amounts.length >= 2 && amounts.length / vals.length >= 0.6;
+  syncToolbarState();
+  syncAsideLayout();
 }
 
 function headerRowCount() {
   const el = typeof document !== 'undefined' && document.getElementById('headerRow');
   return el ? Math.max(1, parseInt(el.value) || 1) : 1;
-}
-
-/* 文字欄的「雜字」剝除 —— 只做兩條幾乎不會誤刪的規則，而且都會把原辨識留在 tooltip
- * （可 Ctrl+Z 復原）：
- *   1. 結尾是單一個英文字母（「人事費L」「業務費L」）：中文科目不會以英文字母結尾
- *   2. 尾字與首字相同（「主持人費主」「臨時工資臨」）：偵測框重疊造成首字重複
- * 「2業」這種缺字／半個詞一律不動 —— 刪掉沒有任何機制能驗證對不對，寧可留著給人看。 */
-function stripGarbageText(data, headerRows = 1) {
-  const out = { data: data.map(r => r.slice()), repairs: [] };
-  const cols = Math.max(0, ...data.map(r => r.length));
-  const amountCols = new Set();
-  for (let c = 0; c < cols; c++) {
-    if (isAmountColumn(data.slice(headerRows).map(r => String(r?.[c] ?? '')))) amountCols.add(c);
-  }
-  for (let r = headerRows; r < out.data.length; r++) {
-    const row = out.data[r] || [];
-    for (let c = 0; c < row.length; c++) {
-      if (amountCols.has(c)) continue;
-      const raw = String(row[c] ?? '').trim();
-      if (raw.length < 3 || !/[\u4e00-\u9fff]/.test(raw)) continue;   // 只處理中文欄，且至少 3 字
-      if (!isNaN(Validator._num(raw))) continue;
-      let fixed = null;
-      if (/[A-Za-z]$/.test(raw) && /[\u2e80-\u9fff]/.test(raw.slice(0, -1))) fixed = raw.slice(0, -1);
-      else if (raw[0] === raw[raw.length - 1]) fixed = raw.slice(0, -1);
-      if (!fixed || fixed.length < 2) continue;
-      row[c] = fixed;
-      out.repairs.push({ r, c, from: raw, to: fixed });
-    }
-  }
-  return out;
-}
-
-function unparsedNumericCells(table = tableData, headerRows = headerRowCount()) {
-  const out = [];
-  const cols = Math.max(0, ...table.map(r => r.length));
-  for (let c = 0; c < cols; c++) {
-    const vals = table.slice(headerRows).map(r => String(r?.[c] ?? '').trim());
-    if (!isAmountColumn(vals)) continue;            // 不是金額欄（項次欄、科目欄不算）
-    for (let r = headerRows; r < table.length; r++) {
-      const raw = String(table[r]?.[c] ?? '').trim();
-      if (!raw) continue;
-      if (!isNaN(Validator._num(raw))) continue;
-      if (/^[-–—－‐—/]+$/.test(raw)) continue;      // 破折號＝沒有值，不算錯
-      // 完全沒有數字的是文字標籤（小計、合計、人事費），不是「看不懂的數字」——
-      // 把它們列進來只會讓提醒變成噪音（實測：項次欄的小計/合計被誤報）
-      if (!/\d/.test(raw)) continue;
-      out.push({ r, c, text: raw });
-    }
-  }
-  return out;
-}
-
-/* 標籤被 OCR 截斷的合計列：「小計」讀成「小」時 isTotalLabel 認不得，
-   整列就不會被驗算 —— 這種漏驗不會有任何錯誤訊息，只能靠問使用者補回來 */
-const TOTALISH = /^[小合總总計计综総線綫結结]{1,2}$/;
-function suspiciousTotalRows(table = tableData, known = new Set()) {
-  const out = [];
-  for (let r = 0; r < table.length; r++) {
-    if (known.has(r)) continue;
-    const label = String(SmartTotals.rowLabel(table[r], Validator._num) || '').replace(/\s/g, '');
-    if (!label || label.length > 2 || !TOTALISH.test(label)) continue;
-    if (SmartTotals.isTotalLabel(label)) continue;
-    if (!table[r].some(v => !isNaN(Validator._num(v)))) continue;   // 沒有數字就不是合計列
-    out.push({ r, label });
-  }
-  return out;
 }
 
 function confirmTotalRow(r) {
@@ -2985,7 +2032,7 @@ function showCellPeek(r, c) {
   const note = document.getElementById('peek-note');
   if (!panel || !canvas) return;
   const box = cellBoxes?.[r]?.[c];
-  if (!ocrPreview || !box) { panel.style.display = 'none'; return; }
+  if (!ocrPreview || !box) { panel.style.display = 'none'; syncAsideLayout(); return; }
   const k = ocrPreviewScale || 1;
   const padX = Math.max(4, (box.x2 - box.x1) * 0.06);
   const padY = Math.max(3, (box.y2 - box.y1) * 0.22);
@@ -3003,13 +2050,14 @@ function showCellPeek(r, c) {
   g.fillStyle = '#fff';
   g.fillRect(0, 0, canvas.width, canvas.height);
   try { g.drawImage(ocrPreview, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height); }
-  catch (err) { panel.style.display = 'none'; return; }
+  catch (err) { panel.style.display = 'none'; syncAsideLayout(); return; }
   canvas.style.width = Math.round(sw * scale) + 'px';
   canvas.style.height = Math.round(sh * scale) + 'px';
   const text = String(tableData?.[r]?.[c] ?? '');
   note.textContent = `第 ${r + 1} 列／第 ${c + 1} 欄：「${text}」` + (scale > 1.15 ? `　放大 ${scale.toFixed(1)}×` : '');
   panel.style.display = 'block';
   peekKey = r + ',' + c;
+  syncAsideLayout();
   positionCellPeek();
 }
 
@@ -3038,6 +2086,7 @@ function hideCellPeek() {
   const panel = document.getElementById('cell-peek');
   if (panel) panel.style.display = 'none';
   peekKey = '';
+  syncAsideLayout();
 }
 document.addEventListener('focusin', (ev) => {
   const td = ev.target?.closest?.('#data-table td[data-r]');
@@ -3122,6 +2171,8 @@ function runSmartTotals(showEmpty = false) {
     alert('智慧合計模組未載入，請重新整理頁面。');
     return;
   }
+  manualTrayOpen = false;
+  pickMode = false;
   sel.col = emptySel();
   sel.row = emptySel();
   renderSelectionTray();
@@ -3162,7 +2213,7 @@ function runSmartTotals(showEmpty = false) {
     info.hier = true;
     delete info.implicit;
   }
-  smartUnparsed = unparsedNumericCells(tableData);
+  smartUnparsed = unparsedNumericCells(tableData, headerRowCount());
   smartSuspects = info.hier ? [] : suspiciousTotalRows(tableData, new Set(info.totalRows.map(t => t.r)));
   smartMarks.clear();
   info.confirmed.forEach(hit => smartMarks.add(hit.r + ',' + hit.c));
@@ -3202,8 +2253,11 @@ function runSmartTotals(showEmpty = false) {
     || !!(smartMultiply && smartMultiply.checked > 0)
     || !!(smartVoucher && smartVoucher.checked > 0);
   renderTable();
+  applyPicks();
   renderSmartNote();
   renderReviewButton();   // 乘法／合計不符也要算進「待核對」的數字，否則按鈕上的數量會是舊的
+  syncToolbarState();
+  syncAsideLayout();
 }
 
 function renderSmartNote() {
@@ -3344,100 +2398,10 @@ function renderSmartNote() {
 let lastTemplate = null;
 const rowLabelOf = row => SmartTotals.rowLabel(row, Validator._num);
 
-// 科目名稱比對忽略標點：OCR 常漏讀「、」（「不動產、廠房及設備」→「不動產廠房及設備」），
-// 而括號／全形半形混用也會讓同一列被當成不同列 —— 這些字元對「是哪一列」沒有語意。
-// （標點表刻意寫在函式內：tests/test_template.js 會單獨抽出這幾個函式來跑）
-function squashLabel(s) {
-  const punct = /[、，,。．.：:；;・·（）()「」『』\[\]【】\-–—_/\\|]/g;
-  return String(s ?? '').replace(/\s+/g, '').replace(punct, '');
-}
-
-// 表頭比對時忽略數字：年度、月份每張不同（「113年1月實支」→「年月實支」）
-function templateKey(s) {
-  const punct = /[、，,。．.：:；;・·（）()「」『』\[\]【】\-–—_/\\|]/g;
-  return String(s ?? '').replace(/[\s\d]+/g, '').replace(punct, '');
-}
-
-// 欄的「形狀」＝每一欄有幾成是數字。同一份報表的下一張會幾乎一樣；
-// 欄數相同但語意不同的兩張表（金額欄↔數量欄）則差很多 —— 用來擋「硬套欄角色」
-function columnShape(table) {
-  const cols = Math.max(0, ...table.map(r => r.length));
-  const shape = [];
-  for (let c = 0; c < cols; c++) {
-    const vals = table.slice(1).map(r => String(r?.[c] ?? '').trim()).filter(Boolean);
-    if (!vals.length) { shape.push(0); continue; }
-    const numeric = vals.filter(v => !isNaN(parseFloat(v.replace(/[,，\s$]/g, '')))).length;
-    shape.push(numeric / vals.length);
-  }
-  return shape;
-}
-
-function makeTemplate(table, selection, totalRows, labelOf) {
-  const label = r => squashLabel(labelOf(table[r]));
-  const size = k => k.plus.length + k.minus.length + (k.total !== null ? 1 : 0);
-  const { col, row } = selection;
-  const totals = [...totalRows].map(label).filter(Boolean);
-  if (!size(col) && !size(row) && !totals.length) return null;
-  return {
-    ncols: Math.max(0, ...table.map(r => r.length)),
-    header: (table[0] || []).map(templateKey),
-    col: size(col) ? { plus: [...col.plus], minus: [...col.minus], total: col.total } : null,
-    row: size(row) ? { plus: row.plus.map(label), minus: row.minus.map(label),
-      total: row.total !== null ? label(row.total) : null } : null,
-    totals,
-    shape: columnShape(table),
-  };
-}
-
-function matchTemplate(tpl, table, labelOf) {
-  const ncols = Math.max(0, ...table.map(r => r.length));
-  if (ncols !== tpl.ncols) return { ok: false, reason: `欄數不同（上一張 ${tpl.ncols} 欄、這張 ${ncols} 欄）` };
-  const header = (table[0] || []).map(templateKey);
-  const filled = Math.max(header.filter(Boolean).length, tpl.header.filter(Boolean).length);
-  const same = header.filter((h, c) => h && h === tpl.header[c]).length;
-  if (!filled || same / filled < 0.6) return { ok: false, reason: '表頭不同' };
-  // 列依標籤找：找不到或有兩列同名都不算（猜錯列比不套用更糟）
-  const labels = table.map(r => squashLabel(labelOf(r)));
-  const find = l => {
-    const i = l ? labels.indexOf(l) : -1;
-    return i >= 0 && labels.indexOf(l, i + 1) < 0 ? i : -1;
-  };
-  let row = null, rowSkipped = false;
-  if (tpl.row) {
-    const plus = tpl.row.plus.map(find), minus = tpl.row.minus.map(find);
-    const total = tpl.row.total === null ? null : find(tpl.row.total);
-    if ([...plus, ...minus, total ?? 0].every(i => i >= 0)) row = { plus, minus, total };
-    else rowSkipped = true;
-  }
-  const col = tpl.col && { plus: [...tpl.col.plus], minus: [...tpl.col.minus], total: tpl.col.total };
-  // 欄的形狀也要相近：欄數、表頭都對得上，但「金額欄」在這張其實是「數量欄」時，
-  // 硬套欄角色會產生最危險的結果 —— 錯了卻顯示驗算正確
-  if (Array.isArray(tpl.shape) && tpl.shape.length === ncols) {
-    const cols = ncols;
-    let diff = 0, n = 0;
-    for (let c = 0; c < cols; c++) {
-      const vals = table.slice(1).map(r => String(r?.[c] ?? '').trim()).filter(Boolean);
-      if (!vals.length) continue;
-      const numeric = vals.filter(v => !isNaN(parseFloat(v.replace(/[,，\s$]/g, '')))).length / vals.length;
-      diff += Math.abs(numeric - (tpl.shape[c] ?? 0));
-      n += 1;
-    }
-    if (n && diff / n > 0.34) return { ok: false, reason: '欄位內容的型態不同（可能不是同一張報表）' };
-  }
-  const totals = labels.flatMap((l, r) => l && tpl.totals.includes(l) ? [r] : []);
-  return { ok: true, col, row, rowSkipped, totals };
-}
-
 // 換下一張之前呼叫；這張沒設定任何東西時保留更早那一張的
 function rememberTemplate() {
   if (!tableData.length) return;
   lastTemplate = makeTemplate(tableData, sel, manualTotalRows, rowLabelOf) || lastTemplate;
-}
-
-function describeRoles(kind, k) {
-  const n = i => (kind === 'col' ? '欄' : '列') + (i + 1);
-  return [...k.plus.map(i => '＋' + n(i)), ...k.minus.map(i => '−' + n(i))].join('').replace(/^＋/, '')
-    + (k.total !== null ? '＝' + n(k.total) : '');
 }
 
 function applyTemplate() {
@@ -3528,16 +2492,14 @@ function validate() {
     totalDiff += res.totalDiff;
     list.push(...res.errorList);
     for (const [k, e] of Validator.errors) {
-      const cellKey = Math.floor(k);
-      const prev = merged.get(cellKey)?.[1];
-      // 存回原本的 key：正確格是 key+0.1（isOk 靠它），用 floor 後的 key 會讓正確格永遠不變綠
-      if (!prev || (prev.ok && !e.ok)) merged.set(cellKey, [k, e]);
+      const prev = merged.get(k);
+      if (!prev || (prev.ok && !e.ok)) merged.set(k, e);
     }
   }
   Validator.errors.clear();
-  merged.forEach(([k, v]) => Validator.errors.set(k, v));
+  merged.forEach((v, k) => Validator.errors.set(k, v));
 
-  smartUnparsed = unparsedNumericCells(tableData);   // 讓表格標出「看不出是數字」的格
+  smartUnparsed = unparsedNumericCells(tableData, headerRowCount());   // 讓表格標出「看不出是數字」的格
   renderTable();
   renderReviewButton();
 
@@ -3557,16 +2519,22 @@ function validate() {
     else renderSummary({ kind: 'warn', text: `⚠️ 驗算完成但沒有可核對的合計（${direction}）。請確認選取，或改「驗算方向」。` });
     document.getElementById('error-card').style.display = 'none';
   }
+  syncToolbarState();
+  syncAsideLayout();
 }
 
 function renderSummary({ kind, text }) {
   document.getElementById('summary').innerHTML = `<div class="summary-banner ${kind}">${text}</div>`;
 }
 
-// 範圍 input 變動時重繪
+// 範圍 input 變動時重繪並依目前模式重驗
 ['headerRow', 'endRow', 'startCol', 'endCol'].forEach(id => {
   const el = document.getElementById(id);
-  if (el) el.addEventListener('change', () => { if (tableData.length) renderTable(); });
+  if (el) el.addEventListener('change', () => {
+    if (!tableData.length) return;
+    if (smartActive) runSmartTotals();
+    else afterSelectionChange();
+  });
 });
 
 /* =============================================================
@@ -3644,30 +2612,57 @@ function saveBatchResult() {
     exact: tableExact,
     spans: cellSpans.map(r => r.map(s => (s ? { ...s } : null))),
     repairs: [...cellRepairs.entries()],
-    json: null,
+    previewBlob: ocrPreviewBlob,
+    previewScale: ocrPreviewScale,
+    manualTotalRows: [...manualTotalRows],
+    sel: { col: cloneSel(sel.col), row: cloneSel(sel.row) },
   };
 }
 
 function restoreBatchResult(result) {
+  const restoreIdx = batchIndex;
   tableData = result.rows.map(r => r.slice());
   cellConfidence = result.conf.map(r => r.slice());
   cellBoxes = result.boxes.map(r => r.map(b => (b ? { ...b } : null)));
   tableExact = !!result.exact;
   cellSpans = result.spans.map(r => r.map(s => (s ? { ...s } : null)));
   cellRepairs = new Map(result.repairs);
+  try { ocrPreview?.close?.(); } catch (e) {}
+  ocrPreview = null;
+  ocrPreviewBlob = result.previewBlob || null;
+  ocrPreviewScale = result.previewScale || 1;
+  hideCellPeek();
+  if (ocrPreviewBlob) {
+    createImageBitmap(ocrPreviewBlob).then(bm => {
+      if (batchIndex === restoreIdx && ocrPreviewBlob === result.previewBlob) ocrPreview = bm;
+      else bm.close();
+    }).catch(() => {});
+  }
   batchRestored = true;
   manualTotalRows.clear();
+  (result.manualTotalRows || []).forEach(r => manualTotalRows.add(r));
   undoStack.length = 0;
   renderUndoButton();
   pendingText = null;
   clearSmart();
   clearSelections();
+  if (result.sel) {
+    sel.col = cloneSel(result.sel.col);
+    sel.row = cloneSel(result.sel.row);
+    renderSelectionTray();
+  }
   document.getElementById('workspace').style.display = 'block';
+  openInputBar(false);
+  syncAppLayout();
   const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
   renderSummary({ kind: 'info', text: `批次第 ${batchIndex + 1} / ${batch.length} 張 — ${size}。` });
-  renderTable();
-  renderReviewButton();
-  runSmartTotals(true);      // 重算驗算與狀態（便宜、且會更新晶片）
+  if (selReady('col') || selReady('row')) {
+    validate();
+  } else {
+    renderTable();
+    renderReviewButton();
+    runSmartTotals(true);      // 重算驗算與狀態（便宜、且會更新晶片）
+  }
   if (batch.length > 1 && batchIndex >= 0) {
     batch[batchIndex].status = batchStatusOf();
     batch[batchIndex].stats = currentTableStats();
@@ -3677,13 +2672,19 @@ function restoreBatchResult(result) {
 }
 
 function batchStatusOf() {
+  if (!smartActive && Validator.errors.size > 0) {
+    const hasErr = Array.from(Validator.errors.values()).some(e => !e.ok);
+    return hasErr ? 'bad' : 'ok';
+  }
   if (typeof smartInfo === 'undefined' || !smartInfo) return 'pending';
   const bad = (smartInfo.unconfirmed || []).length + (smartMultiply && smartMultiply.failed ? smartMultiply.failed.length : 0)
     + (smartVoucher ? smartVoucher.failed.length : 0);
   const badNum = (smartUnparsed || []).length;
   if (bad) return 'bad';
+  if (badNum > 0) return 'warn';
   if (smartInfo.totalRows && smartInfo.totalRows.length) return 'ok';
   if (smartVoucher && smartVoucher.checked) return 'ok';
+  if (smartMultiply && smartMultiply.checked) return 'ok';
   return 'warn';
 }
 
@@ -3692,6 +2693,9 @@ function currentTableStats() {
   const totals = (smartInfo && smartInfo.totalRows) ? smartInfo.totalRows.length : 0;
   const bad = (smartInfo && smartInfo.unconfirmed) ? smartInfo.unconfirmed.length : 0;
   const mul = (smartMultiply && smartMultiply.failed) ? smartMultiply.failed.length : 0;
+  const vBad = (smartVoucher && smartVoucher.failed) ? smartVoucher.failed.length : 0;
+  const manualErrs = !smartActive ? Array.from(Validator.errors.values()).filter(e => !e.ok) : [];
+  const manualOk = !smartActive ? Array.from(Validator.errors.values()).filter(e => e.ok).length : 0;
   // 差異總額：合計不符取「最接近的那個試算值」差額，乘法不符取與期望值的差額
   let diff = 0;
   (smartInfo && smartInfo.unconfirmed ? smartInfo.unconfirmed : []).forEach(x => {
@@ -3702,10 +2706,13 @@ function currentTableStats() {
     if (Number.isFinite(f.expected)) diff += Math.abs(f.actual - f.expected);
   });
   (smartVoucher ? smartVoucher.failed : []).forEach(x => { diff += Math.abs(x.actual - x.expected); });
+  manualErrs.forEach(e => { diff += Math.abs(e.diff || 0); });
   return {
     rows: tableData.length,
     cols: tableData.length ? Math.max(...tableData.map(r => r.length)) : 0,
-    totals, bad: bad + (smartVoucher ? smartVoucher.failed.length : 0), mul, diff,
+    totals: totals || (manualErrs.length + manualOk),
+    bad: bad + mul + vBad + manualErrs.length,
+    mul, diff,
     low: lowConfidenceCount(),
     unver: (smartInfo && smartInfo.unverifiable) ? smartInfo.unverifiable.length : 0,
     badNum: (smartUnparsed || []).length,
@@ -3731,16 +2738,12 @@ function batchRows() {
 function batchCsvText() {
   const head = ['#', '檔名', '狀態', '列', '欄', '驗算格數', '不符格數', '差異總額', '低信心格', '看不懂的數字格'];
   const zh = { ok: '驗算通過', bad: '有問題', warn: '沒驗到合計', error: '辨識失敗', pending: '未處理' };
-  const cell = (v) => {
-    const t = String(v ?? '');
-    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
-  };
   const lines = [head.join(',')];
   for (const r of batchRows()) {
     const s = r.stats || {};
     lines.push([r.no, r.name, zh[r.status] || r.status, s.rows ?? '', s.cols ?? '',
       s.totals ?? '', s.bad ?? '', s.diff ? Math.round(s.diff) : '', s.low ?? '', s.badNum ?? '']
-      .map(cell).join(','));
+      .map(csvSafeCell).join(','));
   }
   return lines.join('\n');
 }
@@ -3842,67 +2845,10 @@ function togglePastePanel(show) {
   if (next) document.getElementById('paste-input').focus();
 }
 
-// 一行 CSV：支援雙引號包住含逗號的欄位（Excel 匯出的常見格式）
-function parseCsvLine(line) {
-  const out = [];
-  let cur = '', quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (quoted) {
-      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
-      else if (ch === '"') quoted = false;
-      else cur += ch;
-    } else if (ch === '"') quoted = true;
-    else if (ch === ',' || ch === '，') { out.push(cur.trim()); cur = ''; }
-    else cur += ch;
-  }
-  out.push(cur.trim());
-  return out;
-}
-
-// 「人事費 548,000」「租金：12,000 元」→ [名稱, 金額]；認不出來就整行當一格
-function splitLabelAmount(line) {
-  const t = line.trim();
-  const m = t.match(/^(.*?)[\s:：]+((?:NT\$|\$)?\s*-?[\d,]+(?:\.\d+)?\s*(?:元|%|％)?)$/);
-  if (m && m[1].trim()) return [m[1].trim(), m[2].replace(/\s+/g, '')];
-  return [t];
-}
-
-function parsePastedTable(text) {
-  const raw = String(text || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
-  const lines = raw.split('\n').filter(l => l.trim() !== '');
-  if (!lines.length) return [];
-
-  const tabs = lines.filter(l => l.includes('\t')).length;
-  let grid;
-  if (tabs >= Math.ceil(lines.length * 0.6)) {
-    grid = lines.map(l => l.split('\t').map(c => c.trim()));
-  } else if (lines.filter(l => {
-    // 逗號如果只是千分位（12,000）就不是 CSV 分隔符
-    const digitCommas = (l.match(/(?<=\d)[,，](?=\d{3}(\D|$))/g) || []).length;
-    const commas = (l.match(/[,，]/g) || []).length;
-    return commas > digitCommas && parseCsvLine(l).length >= 2;
-  }).length >= Math.ceil(lines.length * 0.8)) {
-    grid = lines.map(parseCsvLine);
-  } else if (lines.filter(l => /\S\s{2,}\S|\u3000\u3000/.test(l)).length >= Math.ceil(lines.length * 0.6)) {
-    // 連續空白／全形空白對齊（從 Word、PDF 複製常見）：保留空欄，不要 filter
-    grid = lines.map(l => l.split(/\s{2,}|\u3000+/).map(c => c.trim()));
-  } else {
-    grid = lines.map(splitLabelAmount);
-  }
-
-  // 統一字數：短列補空、長列截掉全空的尾欄
-  const ncol = Math.max(...grid.map(r => r.length));
-  for (const r of grid) while (r.length < ncol) r.push('');
-  let keep = ncol;
-  while (keep > 1 && grid.every(r => !r[keep - 1])) keep--;
-  return grid.map(r => r.slice(0, keep));
-}
-
 // 把一份二維陣列接上既有的驗算流程（不經 OCR）
 function applyTable(grid, opts = {}) {
   if (!grid || !grid.length) return false;
-  const repaired = repairNumericCells(grid.map(r => r.slice()), null);
+  const repaired = repairNumericCells(grid.map(r => r.slice()), null, headerRowCount());
   const stripped = stripGarbageText(repaired.data, headerRowCount());
   rememberTemplate();
   tableData = stripped.data;
@@ -3917,7 +2863,10 @@ function applyTable(grid, opts = {}) {
   renderUndoButton();
   clearSmart();
   clearSelections();
+  if (appMode !== 'table') setAppMode('table');
   document.getElementById('workspace').style.display = 'block';
+  openInputBar(false);
+  syncAppLayout();
   const size = `共 ${tableData.length} 列 × ${Math.max(...tableData.map(r => r.length))} 欄`;
   const fixNote = cellRepairs.size ? `　🔧 ${cellRepairs.size} 格已自動整理（虛線標示）。` : '';
   const source = opts.source === 'paste' ? '📋 貼上的文字（未經辨識，內容就是原文）' : (opts.source || '');
@@ -4042,9 +2991,13 @@ function undoLast() {
   while (tableData[it.r] && tableData[it.r].length <= it.c) tableData[it.r].push('');
   if (tableData[it.r]) tableData[it.r][it.c] = it.from;
   renderUndoButton();
+  if (smartActive) {
+    runSmartTotals();
+  } else if (tableData.length) {
+    smartUnparsed = unparsedNumericCells(tableData, headerRowCount());
+    afterSelectionChange();
+  }
   renderReviewButton();
-  if (smartActive) runSmartTotals();
-  else if (tableData.length) renderTable();
   renderSummary({ kind: 'info', text: `↩︎ 已復原第 ${it.r + 1} 列／第 ${it.c + 1} 欄為「${escapeHtml(it.from)}」。` });
 }
 // Cmd/Ctrl+Z：編輯格子時讓瀏覽器自己處理（原生文字復原），其餘情況才接手
@@ -4121,15 +3074,14 @@ async function copyTable() {
 // 加 UTF-8 BOM —— 沒有它 Excel（繁中 Windows）開起來中文會變亂碼。
 function exportCsv() {
   if (!tableData.length) { renderSummary({ kind: 'warn', text: '⚠️ 還沒有辨識結果可以匯出。' }); return; }
-  const esc = (v) => {
-    const s = String(v ?? '');
-    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const csv = '\ufeff' + tableData.map(row => row.map(esc).join(',')).join('\r\n');
+  const csv = '\ufeff' + tableData.map(row => row.map(csvSafeCell).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = `表格-${new Date().toISOString().slice(0, 10)}.csv`;
+  const baseName = (pdfDoc && pdfName)
+    ? `${pdfName}-p${pdfPage}`
+    : (batch[batchIndex]?.name ? batch[batchIndex].name.replace(/\.[^.]+$/, '') : `表格-${new Date().toISOString().slice(0, 10)}`);
+  a.download = `${baseName}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -4137,11 +3089,11 @@ function exportCsv() {
   renderSummary({ kind: 'ok', text: `✅ 已匯出 ${tableData.length} 列 CSV。` });
 }
 
-// 信心偏低時，一鍵改用高精度模型重跑（不必自己回頭找下拉選單）
-function retryHighAccuracy() {
+// 快速模式信心偏低時，一鍵改用標準模型重跑（不必自己回頭找下拉選單）
+function retryStandardModel() {
   const sel = document.getElementById('ocr-quality');
-  if (sel) sel.value = 'medium';
-  setOcrQuality('medium');
+  if (sel) sel.value = 'small';
+  setOcrQuality('small');
   analyzeImage();
 }
 
@@ -4155,14 +3107,15 @@ if (autoAnalyzeEl) {
   });
 }
 
-// 寬螢幕放得下，說明與進階設定預設展開；手機預設收起，結果才不會被推到很下面
-if (matchMedia('(min-width: 601px)').matches) {
-  document.querySelectorAll('details.fold').forEach(d => { d.open = true; });
-}
-
 // 選取托盤初始狀態
 setSelMode(1);
 renderSelectionTray();
+
+// 還原儲存的門檻與驗算方向選單
+const lowConfEl = document.getElementById('lowconf');
+if (lowConfEl) lowConfEl.value = String(LOW_CONFIDENCE);
+const autoModeEl = document.getElementById('auto-mode');
+if (autoModeEl) autoModeEl.value = autoMode;
 
 // 初始化辨識精度選單（記住上次選擇）
 const qualitySelect = document.getElementById('ocr-quality');
@@ -4200,8 +3153,22 @@ async function applyUpdate() {
   try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch (err) { /* 忽略 */ }
   location.reload();
 }
+// 僅在目前所選模型已於本機快取時，頁面閒置預熱 Worker（不觸發額外網路下載）
+function scheduleWorkerWarmup() {
+  const run = async () => {
+    if (analyzing || ocrWorker || !self.caches) return;
+    try {
+      if ((await missingModels(ocrQuality)).length > 0) return;
+      await workerRequest({ type: 'warmup', quality: ocrQuality });
+    } catch (err) { /* 預熱失敗不影響正常流程 */ }
+  };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 2500 });
+  else setTimeout(run, 1500);
+}
+
 setAppMode(appMode);   // 套用記住的模式（放在最後：updateFloat 要用到後面宣告的變數）
 checkUpdate(false);
+scheduleWorkerWarmup();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(false); });
 </script>
 </body>

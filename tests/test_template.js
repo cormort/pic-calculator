@@ -2,15 +2,7 @@
  * 執行：node tests/test_template.js
  */
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-
-const html = fs.readFileSync(
-  path.join(__dirname, "..", "pic-calculator", "static", "index.html"), "utf8");
-const src = ["squashLabel", "templateKey", "columnShape", "makeTemplate", "matchTemplate"]
-  .map((fn) => html.match(new RegExp(`function ${fn}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0])
-  .join("\n");
-const T = new Function(src + "\nreturn { makeTemplate, matchTemplate };")();
+const T = require("../pic-calculator/static/template.js");
 
 // 標籤＝第一個不是數字的格（與 SmartTotals.rowLabel 同概念）
 const labelOf = (row) => (row || []).find((v) => v && isNaN(Number(String(v).replace(/,/g, "")))) || "";
@@ -95,7 +87,6 @@ assert.deepStrictEqual(
   { plus: [1], minus: [], total: 2 });
 
 // 欄數、表頭都相同，但欄位內容型態不同（金額欄變成文字欄）→ 不沿用。
-// 硬套欄角色會產生最危險的結果：錯了卻顯示「驗算正確」
 const shapeA = [
   ["科目", "113年1月預算", "113年1月實支", "餘額"],
   ["人事費", "1,000", "800", "200"],
@@ -108,8 +99,43 @@ const shapeB = [
   ["業務費", "說明丁", "說明戊", "說明己"],
 ];
 assert.strictEqual(T.matchTemplate(shapeTpl, shapeB, labelOf).ok, false);
-// 型態相同（都還是數字）→ 照樣沿用
 const shapeC = shapeB.map((r, i) => i === 0 ? r : r.map((v, j) => j === 0 ? v : "1"));
 assert.strictEqual(T.matchTemplate(shapeTpl, shapeC, labelOf).ok, true);
 
-console.log("PASS  沿用上一張設定：欄數／表頭比對、合計列依標籤、列角色依科目、標點差異、欄位型態");
+// 乘除與點選順序（mul / div / order）保存、比對與顯示
+const opTable1 = [
+  ["品名", "單價", "數量", "金額"],
+  ["碳粉匣", "5,000", "2", "10,000"],
+  ["紙張", "100", "5", "500"],
+];
+const opTable2 = [
+  ["品名", "單價", "數量", "金額"],
+  ["紙張", "200", "3", "600"],
+  ["碳粉匣", "4,000", "1", "4,000"],
+];
+const opSel = {
+  col: { plus: [], minus: [], mul: [1, 2, 3], div: [], order: [1, 2, 3], total: null },
+  row: { plus: [], minus: [], mul: [], div: [], order: [], total: null },
+};
+const opTpl = T.makeTemplate(opTable1, opSel, new Set(), labelOf);
+const opMatch = T.matchTemplate(opTpl, opTable2, labelOf);
+assert.strictEqual(opMatch.ok, true);
+assert.deepStrictEqual(opMatch.col.mul, [1, 2, 3]);
+assert.deepStrictEqual(opMatch.col.order, [1, 2, 3]);
+assert.strictEqual(T.describeRoles("col", opMatch.col), "欄2×欄3＝欄4");
+
+const divRowTpl = T.makeTemplate(
+  [["科目", "金額"], ["總額", "1,000"], ["天數", "4"], ["平均", "250"]],
+  { col: empty(), row: { plus: [], minus: [], mul: [], div: [1, 2], order: [1, 2], total: 3 } },
+  new Set(), labelOf
+);
+const divMatch = T.matchTemplate(
+  divRowTpl,
+  [["科目", "金額"], ["平均", "200"], ["天數", "5"], ["總額", "1,000"]],
+  labelOf
+);
+assert.strictEqual(divMatch.ok, true);
+assert.deepStrictEqual(divMatch.row, { plus: [], minus: [], total: 1, div: [3, 2], order: [3, 2] });
+assert.strictEqual(T.describeRoles("row", divMatch.row), "列4÷列3＝列2");
+
+console.log("PASS  沿用上一張設定：欄數／表頭比對、合計列依標籤、列角色依科目、標點差異、欄位型態、乘除順序");

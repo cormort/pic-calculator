@@ -7,7 +7,7 @@
 # 1) 啟動本機靜態檔（或用 GitHub Pages）
 python3 -m http.server 8765 --bind 127.0.0.1 --directory pic-calculator/static &
 
-# 2) 跑一輪（第一次會下載模型：標準 30MB、高精度 139MB）
+# 2) 跑一輪（第一次會下載模型：標準 30MB、快速 6MB）
 npm i playwright && npx playwright install --with-deps chromium
 node bench/run_ocr.js --quality=small --out=out/run.json
 
@@ -145,7 +145,7 @@ curl -fsSL https://raw.githubusercontent.com/cormort/pic-calculator/main/bench/e
 |---|---|---|---|
 | tiny（6MB） | 未量測 | 未量測 | — |
 | **small（30MB，預設）** | **97.4%** | **97.6%** | 10–20 秒 |
-| medium（139MB） | 96.3% | 93.9% | 57–117 秒 |
+| medium（139MB，已移除） | 96.3% | 93.9% | 57–117 秒 |
 
 medium 反而比較差，而且錯法很危險：金額會掉一位（`200,000` → `2,000`、
-`6,000,000` → `600`），驗算會整片紅。所以介面上標了「實測金額位數較易漏讀」。
+`6,000,000` → `600`），驗算會整片紅。因此已自倉庫與介面移除，保留標準與快速模型。
