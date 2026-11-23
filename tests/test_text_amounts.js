@@ -6,6 +6,7 @@ const { csvSafeCell } = require("../pic-calculator/static/validator.js");
 const { parsePastedTable } = require("../pic-calculator/static/table_builder.js");
 const {
   wordsToText,
+  wordsToPlainText,
   chineseMoneyParts,
   extractAmounts,
   replaceTextSpan,
@@ -86,5 +87,18 @@ assert.strictEqual(csvSafeCell("-A1+B1"), "'-A1+B1");
 assert.strictEqual(csvSafeCell("-1,000"), '"-1,000"');
 assert.strictEqual(csvSafeCell("-"), "-");
 assert.strictEqual(csvSafeCell('a,"b"'), '"a,""b"""');
+
+// 7) wordsToPlainText：保留換行、空行分段、英文詞間空格，緊鄰中文不插空白
+assert.strictEqual(wordsToPlainText([]), "");
+assert.strictEqual(
+  wordsToPlainText([
+    w("第一行", 10, 70, 20, 20),
+    w("中文", 72, 110, 20, 20),
+    w("Hello", 10, 60, 45, 20),
+    w("World", 66, 115, 45, 20),
+    w("第二段開始", 10, 110, 90, 20),
+  ]),
+  "第一行中文\nHello World\n\n第二段開始"
+);
 
 console.log("PASS  文字金額模式、貼上解析與 CSV 安全");

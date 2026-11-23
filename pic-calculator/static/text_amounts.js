@@ -35,6 +35,42 @@
       .replace(/(?<![\d.])([1-9]\d{0,2}(?:\.\d{3})+)(?=[萬億兆千仟元])/g, m => m.replace(/\./g, ','));
   }
 
+  function wordsToPlainText(words) {
+    if (!words || !words.length) return '';
+    const sorted = [...words].sort((a, b) => a.cy - b.cy);
+    const lines = [];
+    for (const w of sorted) {
+      const line = lines[lines.length - 1];
+      if (line && Math.abs(w.cy - line.cy) < Math.min(w.h, line.h) * 0.5) {
+        line.ws.push(w);
+      } else {
+        lines.push({ cy: w.cy, h: w.h, ws: [w] });
+      }
+    }
+    const heights = lines.map(l => l.h).filter(h => h > 0).sort((a, b) => a - b);
+    const medH = heights.length ? heights[Math.floor(heights.length / 2)] : 0;
+    const lineTexts = lines.map(l => {
+      const ws = l.ws.sort((a, b) => a.x1 - b.x1);
+      let out = ws[0].text;
+      for (let i = 1; i < ws.length; i++) {
+        const prev = ws[i - 1], curr = ws[i];
+        const gap = curr.x1 - prev.x2;
+        const refH = Math.min(prev.h, curr.h);
+        const needSpace = gap > refH * 0.6
+          || (/[A-Za-z0-9]$/.test(prev.text) && /^[A-Za-z0-9]/.test(curr.text) && gap > refH * 0.15);
+        out += (needSpace ? ' ' : '') + curr.text;
+      }
+      return out.replace(/\s+$/, '');
+    });
+    let result = lineTexts[0];
+    for (let i = 1; i < lines.length; i++) {
+      const stepH = medH || Math.min(lines[i - 1].h, lines[i].h);
+      const sep = (lines[i].cy - lines[i - 1].cy > stepH * 1.85) ? '\n\n' : '\n';
+      result += sep + lineTexts[i];
+    }
+    return result;
+  }
+
   const BIG_UNITS = { 兆: 1e12, 億: 1e8, 萬: 1e4 };
   const SMALL_UNITS = { 千: 1e3, 仟: 1e3, 百: 100, 佰: 100, 拾: 10, 十: 10 };
 
@@ -162,7 +198,7 @@
     return (n < 0 ? '短絀' : '') + parts.join('') + '元';
   }
 
-  const api = { wordsToText, chineseMoneyParts, extractAmounts, replaceTextSpan, zhMoney };
+  const api = { wordsToText, wordsToPlainText, chineseMoneyParts, extractAmounts, replaceTextSpan, zhMoney };
   Object.assign(root, api);
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

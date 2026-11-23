@@ -512,7 +512,7 @@ body.has-content.show-intake .upload-zone .up-icon { display: none; }
 }
 .card-body { padding: 14px 16px; }
 
-#workspace, #text-card, #paste-panel, #preview-wrap { scroll-margin-top: 66px; }
+#workspace, #text-card, #ocr-card, #paste-panel, #preview-wrap { scroll-margin-top: 66px; }
 #workspace { display: none; margin-top: 4px; }
 
 .status-stack { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
@@ -1035,9 +1035,37 @@ table.text-amounts mark { background: #fef08a; padding: 0 2px; border-radius: 2p
   .mode-switch { order: 3; width: 100%; justify-content: center; }
   .mode-switch .seg { flex: 1; text-align: center; }
   .drawer-panel { top: 96px; right: 8px; left: 8px; width: auto; max-height: calc(100vh - 110px); }
-  #workspace, #text-card, #paste-panel, #preview-wrap { scroll-margin-top: 108px; }
+  #workspace, #text-card, #ocr-card, #paste-panel, #preview-wrap { scroll-margin-top: 108px; }
   .sel-tray { top: 96px; }
 }
+
+/* =============================================================
+   Plain Text OCR Mode
+   ============================================================= */
+.ocr-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ocr-textarea {
+  width: 100%;
+  min-height: 260px;
+  padding: 12px;
+  font-size: .95rem;
+  line-height: 1.7;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  resize: vertical;
+}
+@media (min-width: 960px) {
+  .ocr-textarea { min-height: 420px; }
+}
+.ocr-textarea:focus { outline: 2px solid rgba(37, 87, 214, .22); border-color: var(--primary); }
 
 @media (max-width: 600px) {
   .container { padding: 12px 10px 28px; }

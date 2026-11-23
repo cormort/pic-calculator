@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>圖片計算器</title>
-<link rel="stylesheet" href="styles.css?v=76">
+<link rel="stylesheet" href="styles.css?v=77">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -35,6 +35,7 @@
     <div class="mode-switch" id="mode-row" role="group" aria-label="計算模式">
       <button class="seg" data-mode="table" onclick="setAppMode('table')">📊 表格驗算</button>
       <button class="seg" data-mode="text" onclick="setAppMode('text')">📝 文字金額</button>
+      <button class="seg" data-mode="ocr" onclick="setAppMode('ocr')">📄 文字辨識</button>
     </div>
     <div class="header-actions">
       <button class="hdr-btn hdr-btn-accent" id="new-input-btn" style="display:none;" onclick="openInputBar()" title="開啟上傳／拍照／貼上面板">
@@ -113,7 +114,8 @@
         <strong>✏️ 手動選欄列</strong>：先在托盤選角色（＋／−／×／÷／＝），再點表格欄號或列號套用；支援 <strong>Shift＋點</strong> 連續選取，點 chip 可取消。<br>
         <strong>🧮 點格加總</strong>：開啟後點選任意格切換 ＋／−，即時算出小計而不改動原表。<br>
         <strong>🔁 沿用設定</strong>：批次處理同格式報表時，下一張會自動比對欄數與表頭並沿用上一張的驗算設定。<br>
-        <strong>📝 文字金額</strong>：頁首切換至「文字金額」，會萃取段落裡的「…元」金額並可點擊原文即時加減重算。
+        <strong>📝 文字金額</strong>：頁首切換至「文字金額」，會萃取段落裡的「…元」金額並可點擊原文即時加減重算。<br>
+        <strong>📄 文字辨識</strong>：頁首切換至「文字辨識」，會保留換行與段落，方便直接編輯、複製全文或匯出 TXT。
       </div>
     </div>
   </div>
@@ -277,6 +279,24 @@
     </div>
   </div>
 
+  <!-- 純文字辨識模式 -->
+  <div class="card" id="ocr-card" style="display:none;">
+    <div class="card-header">
+      <span>📄 純文字辨識結果</span>
+      <button class="btn btn-ghost btn-sm" onclick="resetAll()">🆕 清空重來</button>
+    </div>
+    <div class="card-body">
+      <div class="ocr-toolbar">
+        <span class="note" id="ocr-meta"></span>
+        <div class="btn-row" style="margin:0; gap:6px;">
+          <button class="btn btn-sm" id="ocr-copy-btn" onclick="copyOcrText()">📋 複製全文</button>
+          <button class="btn btn-outline btn-sm" onclick="exportOcrTxt()">⬇️ 匯出 TXT</button>
+        </div>
+      </div>
+      <textarea id="ocr-output" class="ocr-textarea" rows="14" oninput="updateOcrMeta()" placeholder="辨識結果會顯示在這裡，可直接編輯、複製或匯出…"></textarea>
+    </div>
+  </div>
+
   <div class="spinner-wrap" id="spinner">
     <div class="spinner"></div>
     <p style="color:var(--muted)" id="spinner-text">辨識中，請稍候…</p>
@@ -401,11 +421,11 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=76"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
-<script src="validator.js?v=76"></script>
-<script src="table_builder.js?v=76"></script>
-<script src="text_amounts.js?v=76"></script>
-<script src="template.js?v=76"></script>
+<script src="smart_total.js?v=77"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="validator.js?v=77"></script>
+<script src="table_builder.js?v=77"></script>
+<script src="text_amounts.js?v=77"></script>
+<script src="template.js?v=77"></script>
 <script>
 /* =============================================================
    應用狀態
@@ -598,8 +618,9 @@ function syncAsideLayout() {
 function syncAppLayout() {
   const wsShown = document.getElementById('workspace')?.style.display === 'block';
   const textShown = document.getElementById('text-card')?.style.display === 'block';
+  const ocrShown = document.getElementById('ocr-card')?.style.display === 'block';
   const prevShown = document.getElementById('preview-wrap')?.style.display === 'block';
-  const hasContent = wsShown || textShown || prevShown;
+  const hasContent = wsShown || textShown || ocrShown || prevShown;
   document.body.classList.toggle('has-content', hasContent);
   document.body.classList.toggle('mode-text', appMode === 'text');
   document.body.classList.toggle('table-active', wsShown);
@@ -613,9 +634,18 @@ function syncAppLayout() {
   syncAsideLayout();
 }
 
-// 模式分流：表格驗算／文字金額（記住上次的選擇）
-let appMode = (() => { try { return localStorage.getItem('pcAppMode') === 'text' ? 'text' : 'table'; } catch (e) { return 'table'; } })();
-function runAnalyze() { return appMode === 'text' ? analyzeText() : analyzeImage(); }
+// 模式分流：表格驗算／文字金額／文字辨識（記住上次的選擇）
+let appMode = (() => {
+  try {
+    const saved = localStorage.getItem('pcAppMode');
+    return saved === 'text' || saved === 'ocr' ? saved : 'table';
+  } catch (e) { return 'table'; }
+})();
+function runAnalyze() {
+  if (appMode === 'text') return analyzeText();
+  if (appMode === 'ocr') return analyzePlainText();
+  return analyzeImage();
+}
 function setAppMode(m) {
   appMode = m;
   try { localStorage.setItem('pcAppMode', m); } catch (e) {}
@@ -624,16 +654,22 @@ function setAppMode(m) {
     b.classList.toggle('on', active);
     b.setAttribute('aria-pressed', String(active));
   });
-  document.getElementById('analyze-btn').textContent = m === 'text' ? '📝 辨識文字萃取金額' : '🔍 辨識表格';
-  document.getElementById('text-tip').style.display = m === 'text' ? 'block' : 'none';
-  // 另一種模式的結果收起來，免得看錯；切回已有結果的模式時再恢復顯示
+  document.getElementById('analyze-btn').textContent =
+    m === 'text' ? '📝 辨識文字萃取金額' : m === 'ocr' ? '📄 辨識純文字' : '🔍 辨識表格';
+  const tipEl = document.getElementById('text-tip');
   if (m === 'text') {
-    document.getElementById('workspace').style.display = 'none';
-    document.getElementById('text-card').style.display = document.getElementById('text-input').value ? 'block' : 'none';
+    tipEl.textContent = '💡 文字模式建議一次拍約半頁 A4，字太小容易讀錯';
+    tipEl.style.display = 'block';
+  } else if (m === 'ocr') {
+    tipEl.textContent = '💡 文字辨識適用印刷體橫書，建議光線充足、字體清晰';
+    tipEl.style.display = 'block';
   } else {
-    document.getElementById('text-card').style.display = 'none';
-    document.getElementById('workspace').style.display = tableData.length ? 'block' : 'none';
+    tipEl.style.display = 'none';
   }
+  // 另一種模式的結果收起來，免得看錯；切回已有結果的模式時再恢復顯示
+  document.getElementById('workspace').style.display = m === 'table' && tableData.length ? 'block' : 'none';
+  document.getElementById('text-card').style.display = m === 'text' && document.getElementById('text-input').value ? 'block' : 'none';
+  document.getElementById('ocr-card').style.display = m === 'ocr' && document.getElementById('ocr-output').value ? 'block' : 'none';
   openInputBar(false);
   updateFloat();
   syncAppLayout();
@@ -805,10 +841,14 @@ function loadFile(file, opts = {}) {
     img.onload = () => {
       if (currentFile !== file || quadTouched) return;
       const hint = document.getElementById('crop-hint');
-      if (appMode === 'text') {
+      if (appMode === 'text' || appMode === 'ocr') {
         detectionFile = null;
         detectionPromise = null;
-        if (hint) hint.textContent = '文字金額模式：將辨識整張圖片（可手動框選局部範圍）。';
+        if (hint) {
+          hint.textContent = appMode === 'ocr'
+            ? '文字辨識模式：將辨識整張圖片（可手動框選局部範圍）。'
+            : '文字金額模式：將辨識整張圖片（可手動框選局部範圍）。';
+        }
         autoRun();
         return;
       }
@@ -1080,7 +1120,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v76';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v77';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewBlob = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1315,6 +1355,7 @@ async function analyzeImage() {
   const qualityEl = document.getElementById('ocr-quality');
   ws.style.display = 'none';
   document.getElementById('text-card').style.display = 'none';
+  document.getElementById('ocr-card').style.display = 'none';
   document.getElementById('text-float').style.display = 'none';
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
@@ -1593,6 +1634,7 @@ async function analyzeText() {
   const qualityEl = document.getElementById('ocr-quality');
   document.getElementById('workspace').style.display = 'none';
   document.getElementById('text-card').style.display = 'none';
+  document.getElementById('ocr-card').style.display = 'none';
   document.getElementById('text-float').style.display = 'none';
   spinner.style.display = 'flex';
   document.getElementById('analyze-btn').disabled = true;
@@ -1641,14 +1683,138 @@ async function analyzeText() {
   }
 }
 
+let ocrSourceNote = '';
+function updateOcrMeta(sourceNote) {
+  if (sourceNote !== undefined) ocrSourceNote = sourceNote;
+  const el = document.getElementById('ocr-meta');
+  const out = document.getElementById('ocr-output');
+  if (!el || !out) return;
+  const text = out.value || '';
+  const lineCount = text ? text.split(/\n/).length : 0;
+  const charCount = text.replace(/\s/g, '').length;
+  const parts = [];
+  if (ocrSourceNote) parts.push(ocrSourceNote);
+  parts.push(`${lineCount} 行`, `${charCount} 字`);
+  el.textContent = parts.join(' · ');
+}
+
+function copyOcrText() {
+  const out = document.getElementById('ocr-output');
+  const btn = document.getElementById('ocr-copy-btn');
+  const text = out?.value || '';
+  if (!text) return;
+  const done = () => {
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = '✅ 已複製';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => {
+      out.select();
+      document.execCommand('copy');
+      done();
+    });
+  } else {
+    out.select();
+    document.execCommand('copy');
+    done();
+  }
+}
+
+function exportOcrTxt() {
+  const text = document.getElementById('ocr-output')?.value || '';
+  if (!text) { alert('目前沒有可匯出的文字'); return; }
+  const base = pdfName
+    ? `${pdfName.replace(/\.pdf$/i, '')}_p${pdfPage}`
+    : (currentFile?.name ? currentFile.name.replace(/\.[^.]+$/, '') : 'ocr-text');
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${base}.txt`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function analyzePlainText() {
+  if (batchRestored && !analyzing && batch[batchIndex]) {
+    forceAuto = true;
+    loadFile(batch[batchIndex].file, { fromBatch: true, page: batch[batchIndex].page });
+    return;
+  }
+  if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
+  if (analyzing) return;
+  analyzing = true;
+  const file = currentFile;
+  let stale = false;
+  const spinner = document.getElementById('spinner');
+  const qualityEl = document.getElementById('ocr-quality');
+  document.getElementById('workspace').style.display = 'none';
+  document.getElementById('text-card').style.display = 'none';
+  document.getElementById('ocr-card').style.display = 'none';
+  document.getElementById('text-float').style.display = 'none';
+  spinner.style.display = 'flex';
+  document.getElementById('analyze-btn').disabled = true;
+  if (qualityEl) qualityEl.disabled = true;
+  try {
+    let words, fromTextLayer = false;
+    if (pendingText && useTextLayer) {
+      words = filterWordsByQuad(pendingText.words, quad, pendingText.size);
+      fromTextLayer = true;
+    } else {
+      words = await ocrWords(file, quad, true);
+      if (currentFile !== file) { stale = true; return; }
+      if (ocrConfidence < 0.85) {
+        const conf = ocrConfidence;
+        document.getElementById('spinner-text').textContent = '信心偏低，轉正 180° 再辨識一次…';
+        const rotated = await flipImage180(file);
+        if (currentFile !== file) { stale = true; return; }
+        const flipped = await ocrWords(rotated, quad.map(([x, y]) => [1 - x, 1 - y]), true);
+        if (currentFile !== file) { stale = true; return; }
+        if (ocrConfidence > conf) words = flipped; else ocrConfidence = conf;
+      }
+    }
+    if (currentFile !== file) { stale = true; return; }
+    document.getElementById('ocr-output').value = wordsToPlainText(words);
+    updateOcrMeta(fromTextLayer ? '取自 PDF 文字層' : `平均信心 ${Math.round(ocrConfidence * 100)}%`);
+    const card = document.getElementById('ocr-card');
+    card.style.display = 'block';
+    floatClosed = false;
+    updateFloat();
+    setPreviewCollapsed(true);
+    openInputBar(false);
+    syncAppLayout();
+    card.scrollIntoView({ block: 'start' });
+  } catch (err) {
+    if (currentFile !== file) { stale = true; return; }
+    alert('文字辨識失敗：' + err.message);
+  } finally {
+    analyzing = false;
+    spinner.style.display = 'none';
+    document.getElementById('analyze-btn').disabled = false;
+    if (qualityEl) qualityEl.disabled = false;
+    const rerun = stale && analyzeQueued;
+    analyzeQueued = false;
+    if (rerun) runAnalyze();
+    else if (!stale) analyzeDone?.();
+  }
+}
+
 function resetAll() {
   rememberTemplate();   // 「重新辨識」通常就是要換下一張：設定先記下來
   document.getElementById('preview-wrap').style.display = 'none';
   document.getElementById('workspace').style.display = 'none';
   document.getElementById('text-card').style.display = 'none';
+  document.getElementById('ocr-card').style.display = 'none';
   document.getElementById('paste-panel').style.display = 'none';
   const ti = document.getElementById('text-input');
   if (ti) ti.value = '';
+  const oo = document.getElementById('ocr-output');
+  if (oo) oo.value = '';
+  const om = document.getElementById('ocr-meta');
+  if (om) om.textContent = '';
+  ocrSourceNote = '';
   textItems = [];
   textSigns = [];
   document.getElementById('file-input').value = '';

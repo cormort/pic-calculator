@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pic-calc-v76';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
+const CACHE_NAME = 'pic-calc-v77';   // 與 index.html 的 APP_VERSION 一起換，舊 worker 才會被淘汰
 // 離線需要的殼：安裝時先存好，第一次開啟之後就能離線使用
 const SHELL = [
   './', 'index.html', 'styles.css', 'smart_total.js', 'validator.js',
