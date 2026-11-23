@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>圖片計算器</title>
-<link rel="stylesheet" href="styles.css?v=78">
+<link rel="stylesheet" href="styles.css?v=79">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -156,8 +156,9 @@
 
     <p class="note" id="text-tip" style="display:none; text-align:center; margin-top:10px;">💡 文字模式建議一次拍約半頁 A4，字太小容易讀錯</p>
     <div id="model-hint-bar" class="model-hint-bar">
-      <span>首次離線使用可先下載標準 OCR 模型（約 30MB）</span>
+      <span id="model-hint-text">首次離線使用可先下載標準 OCR 模型（約 30MB）</span>
       <button class="btn btn-outline btn-sm" onclick="toggleDrawer('settings-drawer', true)">開啟下載</button>
+      <button class="btn btn-ghost btn-sm" onclick="dismissModelHint()" aria-label="關閉提示">✕</button>
     </div>
   </section>
 
@@ -421,11 +422,11 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=78"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
-<script src="validator.js?v=78"></script>
-<script src="table_builder.js?v=78"></script>
-<script src="text_amounts.js?v=78"></script>
-<script src="template.js?v=78"></script>
+<script src="smart_total.js?v=79"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="validator.js?v=79"></script>
+<script src="table_builder.js?v=79"></script>
+<script src="text_amounts.js?v=79"></script>
+<script src="template.js?v=79"></script>
 <script>
 /* =============================================================
    應用狀態
@@ -1121,7 +1122,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v78';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v79';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewBlob = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1252,6 +1253,7 @@ async function ocrWords(file, quad, textOnly = false) {
   if (msg.preview) {
     try { ocrPreview = await createImageBitmap(msg.preview); } catch (e) { ocrPreview = null; }
   }
+  checkModels();
   return msg.results;
 }
 
@@ -1273,8 +1275,12 @@ function setOcrQuality(q) {
 // 只當下載的附帶項目，不算進「已下載」的判斷，否則辨識過也一直顯示尚未下載
 function modelUrls(q, withExtra = false) {
   const dict = q === 'tiny' ? 'ppocrv6_tiny_dict.txt' : 'ppocrv6_dict.txt';
-  return [`PP-OCRv6_${q}_det.ort`, `PP-OCRv6_${q}_rec.ort`, dict, 'pp_doclayout_s.onnx', ...(withExtra ? ['slanet_plus.onnx'] : [])]
+  return [`PP-OCRv6_${q}_det.ort`, `PP-OCRv6_${q}_rec.ort`, dict, ...(withExtra ? ['pp_doclayout_s.onnx', 'slanet_plus.onnx'] : [])]
     .map(f => new URL('models/' + f, location.href).href);
+}
+function dismissModelHint() {
+  try { localStorage.setItem('pcHideModelHint', '1'); } catch (err) { /* 忽略 */ }
+  document.getElementById('model-hint-bar')?.classList.remove('show');
 }
 async function missingModels(q, withExtra = false) {
   if (!self.caches) return [];
@@ -1290,10 +1296,16 @@ async function checkModels() {
   box.innerHTML = states.map(([q, ok]) => `<button class="btn btn-ghost btn-sm" data-q="${q}" onclick="downloadModels('${q}', this)"${ok ? ' disabled' : ''}>`
     + `${ok ? `✓ ${OCR_QUALITY_INFO[q].label} 已快取` : `⬇ ${OCR_QUALITY_INFO[q].label}（${OCR_QUALITY_INFO[q].size}）下載`}</button>`).join('');
   const curOk = states.some(([q, ok]) => q === ocrQuality && ok);
+  const anyOk = states.some(([, ok]) => ok);
+  const dismissed = (() => { try { return localStorage.getItem('pcHideModelHint') === '1'; } catch (err) { return false; } })();
   const badge = document.getElementById('model-badge');
   if (badge) badge.style.display = curOk ? 'none' : 'inline-block';
+  const hintText = document.getElementById('model-hint-text');
+  if (hintText && OCR_QUALITY_INFO[ocrQuality]) {
+    hintText.textContent = `首次離線使用可先下載${OCR_QUALITY_INFO[ocrQuality].label} OCR 模型（約 ${OCR_QUALITY_INFO[ocrQuality].size}）`;
+  }
   const hintBar = document.getElementById('model-hint-bar');
-  if (hintBar) hintBar.classList.toggle('show', !curOk);
+  if (hintBar) hintBar.classList.toggle('show', !anyOk && !dismissed);
 }
 async function downloadModels(q, btn) {
   const note = document.getElementById('model-dl-note');
