@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>圖片計算器</title>
-<link rel="stylesheet" href="styles.css?v=77">
+<link rel="stylesheet" href="styles.css?v=78">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -421,11 +421,11 @@
 
 <div id="update-bar">有新版本 <button class="btn btn-sm" onclick="applyUpdate()">立即更新</button></div>
 
-<script src="smart_total.js?v=77"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
-<script src="validator.js?v=77"></script>
-<script src="table_builder.js?v=77"></script>
-<script src="text_amounts.js?v=77"></script>
-<script src="template.js?v=77"></script>
+<script src="smart_total.js?v=78"></script><!-- 版本號與 APP_VERSION 一起改（tests/test_versions.js 會檢查） -->
+<script src="validator.js?v=78"></script>
+<script src="table_builder.js?v=78"></script>
+<script src="text_amounts.js?v=78"></script>
+<script src="template.js?v=78"></script>
 <script>
 /* =============================================================
    應用狀態
@@ -708,8 +708,9 @@ function expandPdfPages(i) {
   renderBatchBar();
 }
 
-// 單一份多頁 PDF：攤成批次後整份跑完
+// 單一份多頁 PDF：攤成批次後整份跑完（文字辨識模式直接逐頁合併）
 function pdfAllPages() {
+  if (appMode === 'ocr') return ocrAllPdfPages();
   if (!pdfDoc || !pdfFile || pdfDoc.numPages < 2) return;
   if (batch.length <= 1) {
     batch = [{ file: pdfFile, name: pdfFile.name || 'document.pdf', result: null, status: 'pending' }];
@@ -1120,7 +1121,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v77';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v78';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewBlob = null, ocrPreviewScale = 1, cellBoxes = [];
@@ -1684,6 +1685,8 @@ async function analyzeText() {
 }
 
 let ocrSourceNote = '';
+let ocrAllRunning = false;
+let ocrMergedAll = false;
 function updateOcrMeta(sourceNote) {
   if (sourceNote !== undefined) ocrSourceNote = sourceNote;
   const el = document.getElementById('ocr-meta');
@@ -1726,7 +1729,7 @@ function exportOcrTxt() {
   const text = document.getElementById('ocr-output')?.value || '';
   if (!text) { alert('目前沒有可匯出的文字'); return; }
   const base = pdfName
-    ? `${pdfName.replace(/\.pdf$/i, '')}_p${pdfPage}`
+    ? (ocrMergedAll ? `${pdfName}_all` : `${pdfName.replace(/\.pdf$/i, '')}_p${pdfPage}`)
     : (currentFile?.name ? currentFile.name.replace(/\.[^.]+$/, '') : 'ocr-text');
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -1735,6 +1738,91 @@ function exportOcrTxt() {
   a.download = `${base}.txt`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function ocrAllPdfPages() {
+  if (ocrAllRunning) { ocrAllRunning = false; return; }
+  if (!pdfDoc || pdfDoc.numPages < 2 || analyzing) return;
+  ocrAllRunning = true;
+  analyzing = true;
+  ocrMergedAll = false;
+  const doc = pdfDoc;
+  const totalPages = doc.numPages;
+  const spinner = document.getElementById('spinner');
+  const spinnerText = document.getElementById('spinner-text');
+  const qualityEl = document.getElementById('ocr-quality');
+  const allBtn = document.getElementById('pdf-all-btn');
+  const out = document.getElementById('ocr-output');
+  const card = document.getElementById('ocr-card');
+  document.getElementById('workspace').style.display = 'none';
+  document.getElementById('text-card').style.display = 'none';
+  document.getElementById('text-float').style.display = 'none';
+  spinner.style.display = 'flex';
+  document.getElementById('analyze-btn').disabled = true;
+  if (qualityEl) qualityEl.disabled = true;
+  if (allBtn) allBtn.textContent = '⏹ 停止辨識';
+
+  const sections = [];
+  let ocrConfSum = 0, ocrPageCount = 0, textLayerCount = 0;
+  try {
+    for (let p = 1; p <= totalPages && ocrAllRunning; p++) {
+      if (spinnerText) spinnerText.textContent = `正在辨識第 ${p} / ${totalPages} 頁…`;
+      const page = await doc.getPage(p);
+      const viewport = page.getViewport({ scale: 2 });
+      let words = null, useLayer = false;
+      try { words = pdfTextWords((await page.getTextContent()).items, viewport); } catch (err) { words = null; }
+      if (hasUsableTextLayer(words) && !textLayerGarbled(words)) {
+        let hidden = false;
+        try {
+          const ops = await page.getOperatorList();
+          hidden = textMostlyHidden(ops.fnArray, ops.argsArray, pdfjsLib.OPS);
+        } catch (err) { /* ignore */ }
+        if (!hidden) { useLayer = true; textLayerCount++; }
+      }
+      if (!useLayer) {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport, background: '#fff' }).promise;
+        const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+        const pageFile = new File([blob], `${pdfName}-p${p}.png`, { type: 'image/png' });
+        words = await ocrWords(pageFile, FULL_QUAD, true);
+        if (ocrConfidence < 0.85) {
+          const conf = ocrConfidence;
+          const rotated = await flipImage180(pageFile);
+          const flipped = await ocrWords(rotated, FULL_QUAD.map(([x, y]) => [1 - x, 1 - y]), true);
+          if (ocrConfidence > conf) words = flipped; else ocrConfidence = conf;
+        }
+        ocrConfSum += ocrConfidence;
+        ocrPageCount++;
+      }
+      sections.push(`--- 第 ${p} 頁 ---\n${wordsToPlainText(words || [])}`);
+      out.value = sections.join('\n\n');
+      card.style.display = 'block';
+      updateOcrMeta(`辨識進度 ${p}／${totalPages} 頁`);
+    }
+    ocrMergedAll = sections.length > 1;
+    let summary = `已合併 ${sections.length}／${totalPages} 頁`;
+    if (ocrPageCount > 0) summary += `（平均信心 ${Math.round((ocrConfSum / ocrPageCount) * 100)}%）`;
+    else if (textLayerCount > 0) summary += '（取自 PDF 文字層）';
+    updateOcrMeta(summary);
+    setPreviewCollapsed(true);
+    openInputBar(false);
+    syncAppLayout();
+    card.scrollIntoView({ block: 'start' });
+  } catch (err) {
+    alert('批次文字辨識失敗：' + (err?.message || err));
+  } finally {
+    ocrAllRunning = false;
+    analyzing = false;
+    spinner.style.display = 'none';
+    document.getElementById('analyze-btn').disabled = false;
+    if (qualityEl) qualityEl.disabled = false;
+    if (allBtn) allBtn.textContent = '📚 全部頁一次辨識';
+  }
 }
 
 async function analyzePlainText() {
@@ -1746,6 +1834,7 @@ async function analyzePlainText() {
   if (!currentFile) { alert('請先選擇或拍攝圖片'); return; }
   if (analyzing) return;
   analyzing = true;
+  ocrMergedAll = false;
   const file = currentFile;
   let stale = false;
   const spinner = document.getElementById('spinner');
@@ -1815,6 +1904,7 @@ function resetAll() {
   const om = document.getElementById('ocr-meta');
   if (om) om.textContent = '';
   ocrSourceNote = '';
+  ocrMergedAll = false;
   textItems = [];
   textSigns = [];
   document.getElementById('file-input').value = '';
