@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>圖片計算器</title>
+<title>圖片計算機</title>
 <link rel="stylesheet" href="styles.css?v=79">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
@@ -12,7 +12,7 @@
 <meta name="theme-color" content="#17253a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="圖片計算器">
+<meta name="apple-mobile-web-app-title" content="圖片計算機">
 <!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-GHGBM401HN"></script>
 <script>
@@ -29,7 +29,7 @@
   <div class="header-inner">
     <div class="brand">
       <span class="icon">🧮</span>
-      <h1>圖片計算器</h1>
+      <h1>圖片計算機</h1>
     </div>
     <!-- 先分流：載入／拍照後自動辨識只跑選定的那一種 -->
     <div class="mode-switch" id="mode-row" role="group" aria-label="計算模式">
@@ -1122,7 +1122,7 @@ function clearSelectionsSilently() {
 
 
 let ocrWorker = null, ocrJobSeq = 0;
-const APP_VERSION = 'v79';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
+const APP_VERSION = 'v80';   // 改版時連同 sw.js 的 CACHE_NAME 一起換
 const ocrPending = new Map();
 // 轉正後的縮圖（worker 傳來）與每格像素範圍：給「點格子 → 放大原圖」用
 let ocrPreview = null, ocrPreviewBlob = null, ocrPreviewScale = 1, cellBoxes = [];
