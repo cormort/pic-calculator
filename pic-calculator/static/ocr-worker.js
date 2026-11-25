@@ -7,7 +7,7 @@
 import {
   PaddleOcrService,
   getDefaultWebExecutionProviders,
-} from 'https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.0/web/+esm';
+} from 'https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6.7.1/web/+esm';
 // 與 ppu 內部使用同一個 onnxruntime-web 模組（同版本、同 URL），避免載入兩份 runtime
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/+esm';
 
